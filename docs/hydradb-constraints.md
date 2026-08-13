@@ -9,7 +9,8 @@ HydraDB implements a deliberate subset of OpenCypher, shaped by what an
 object-store-native engine can execute efficiently. The subset is narrow in
 places that matter to us, and the design response is consistent: **precompute
 structure into nodes and edges at ingest time, because query-time expressiveness
-is limited.** That suits a dependency graph well.
+is limited.** That suits a code graph well: parsing, call resolution and history
+mining all happen once, and retrieval becomes traversal.
 
 ## Identity
 
@@ -19,11 +20,11 @@ identity the engine matches on. Two consequences:
 - `id` is not a normal property. `MATCH (n {id: 999999}) RETURN n.id` returns a
   row for a node that was never created, because the pattern resolves directly
   to a vertex id instead of testing for existence. Never model a domain
-  identifier as `id`; use `name`, `purl`, `version` and check existence with a
+  identifier as `id`; use `name`, `path`, `qualname` and check existence with a
   label or property predicate.
 - Every entity needs a deterministic integer id assigned before it is written.
-  Package names, versions and maintainer handles are strings, so Lumos owns the
-  string-to-id mapping.
+  Fully qualified symbol names, file paths and commit hashes are strings, so
+  Lumos owns the string-to-id mapping.
 
 Relationships need explicit integer ids too. Batch `CREATE` rejects a
 relationship whose properties do not include `id: row.<field>`.
@@ -36,12 +37,12 @@ a label**. A bare `RETURN 1` is also rejected: the row executor only runs
 `MATCH ... RETURN`.
 
 **Variable-length `MATCH` requires a fixed source id.** This is the single most
-important constraint for Lumos. A reverse-dependency closure written the obvious
-way is rejected:
+important constraint for Lumos. Impact analysis written the obvious way — every
+transitive caller of a symbol — is rejected:
 
 ```cypher
 -- rejected: "variable-length MATCH requires a fixed source id"
-MATCH (s:Package)-[:DEPENDS_ON*1..5]->(t {id: $compromised}) RETURN s.name
+MATCH (s:Symbol)-[:CALLS*1..5]->(t {id: $changed}) RETURN s.name
 ```
 
 Closures that terminate at a known node must instead seed at that node and walk
@@ -50,37 +51,38 @@ does. Traversal depth must always be bounded; `*` and `*1..` are rejected becaus
 unbounded traversal has no predictable cost.
 
 A relationship pattern carries exactly one type and a direction. Undirected
-patterns and multi-type patterns such as `[:DEPENDS_ON|RESOLVES_TO]` are
-rejected, so a traversal that needs to cross edge kinds needs either several
-queries or a single materialised edge type.
+patterns and multi-type patterns such as `[:CALLS|IMPORTS]` are rejected, so a
+traversal that needs to cross edge kinds needs either several queries or a
+single materialised edge type. The path procedures do accept several types at
+once via `relTypes`, which is the practical way to walk a mixed code graph.
 
 `WHERE` supports boolean combinations of property comparisons using `=`, `<>`,
 `<`, `>`, `<=`, `>=` and `STARTS WITH`. **`IN`, `CONTAINS`, `ENDS WITH` and
 `IS NULL` are not supported.** So:
 
 - Set membership is done with `UNWIND`, or with `sourceValues` on a path procedure.
-- Typosquat detection cannot use string distance at query time. Candidate pairs
-  are computed during ingest and materialised as `TYPOSQUAT_OF` edges, which is
-  the graph-native form anyway.
+- Symbol lookup cannot use substring matching at query time. Name resolution
+  happens during ingest, and derived relationships such as co-change coupling
+  are materialised as weighted edges, which is the graph-native form anyway.
 
 Aggregates are limited to `count`, `sum`, `avg` and `collect` — there is no `min`
 or `max`, and `WITH` is pass-through only, with no aliasing, filtering or
 ordering. Multi-stage aggregation pipelines belong in application code.
 
 Property values are integers, floats, booleans and strings. There are no list
-properties, so ordered version data needs a numeric sort key alongside the
-version string.
+properties, so anything set-valued — a symbol's decorators, a file's exported
+names — becomes either separate nodes or a delimited string.
 
 ## Path procedures
 
 `algo.SPpaths`, `algo.SSpaths` and `algo.MSpaths` are the only way to get whole
 paths back rather than endpoint projections, and they are how Lumos computes
-blast radius:
+impact:
 
 ```cypher
 CALL algo.MSpaths({
-  sourceLabel: 'Package', sourceProperty: 'name', sourceValues: ['color-name'],
-  relTypes: ['DEPENDS_ON'], relDirection: 'incoming',
+  sourceLabel: 'Symbol', sourceProperty: 'qualname', sourceValues: ['app.auth.validate_token'],
+  relTypes: ['CALLS'], relDirection: 'incoming',
   maxLen: 5, pathCount: 1000, resultLimit: 10000
 }) YIELD path RETURN path
 ```
@@ -90,7 +92,7 @@ CALL algo.MSpaths({
 - **Set `pathCount` explicitly.** The default is low enough that a closure comes
   back with a single path and looks far smaller than it is.
 - `sourceValues` resolves many seeds server-side, which avoids client-side query
-  fan-out when a compromise spans dozens of packages.
+  fan-out when a question mentions several symbols at once.
 - `RETURN` may only name yielded columns: `path`, `pathWeight`, `pathCost`.
 
 ## Writes
@@ -103,11 +105,11 @@ by `SET` — folding properties into the `MERGE` pattern rewrites the thing bein
 matched and is rejected.
 
 ```cypher
-UNWIND $rows AS row MERGE (n {id: row.vertex}) SET n:Package, n.name = row.name
+UNWIND $rows AS row MERGE (n {id: row.vertex}) SET n:Symbol, n.qualname = row.qualname
 
 UNWIND $rows AS row
-  MATCH (s:Package {id: row.src}), (d:Package {id: row.dst})
-  CREATE (s)-[:DEPENDS_ON {id: row.rel, range: row.range}]->(d)
+  MATCH (s:Symbol {id: row.src}), (d:Symbol {id: row.dst})
+  CREATE (s)-[:CALLS {id: row.rel, line: row.line}]->(d)
 ```
 
 `UNWIND MATCH ... CREATE` writes nothing for rows whose endpoints do not match,

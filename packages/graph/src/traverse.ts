@@ -19,9 +19,13 @@ export interface ClosureOptions {
  * Traverse outward from a set of seed nodes and return whole paths.
  *
  * This exists because variable-length MATCH requires a fixed source id, so
- * `MATCH (s:Package)-[:DEPENDS_ON*1..5]->(t {id: $x})` is rejected outright.
- * The path procedures are the only way to express a closure that ends at a
- * known node, by seeding at the target and walking `incoming` instead.
+ * `MATCH (s:Symbol)-[:CALLS*1..5]->(t {id: $x})` is rejected outright. The path
+ * procedures are the only way to express a closure that ends at a known node,
+ * by seeding at the target and walking `incoming` instead.
+ *
+ * Impact analysis — everything affected by changing a symbol — is exactly this
+ * shape: seed at the symbol, walk callers backwards, keep the paths so every
+ * result carries the chain that justifies it.
  */
 export async function closure(client: HydraClient, options: ClosureOptions): Promise<GraphPath[]> {
   const {
