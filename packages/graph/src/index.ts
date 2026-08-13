@@ -2,6 +2,8 @@ export { HydraClient, HydraQueryError } from "./client.ts";
 export type { Consistency, EdgeRow, NodeRow, QueryOptions, QueryResult } from "./client.ts";
 export { configFromEnv } from "./config.ts";
 export type { HydraConfig } from "./config.ts";
+export { Edge, IMPACT_EDGES, key, Label, UKEY_PROPERTY, ukey } from "./schema.ts";
+export type { FileNode, RepoNode, SymbolKind, SymbolNode } from "./schema.ts";
 export { closure, reachedNodes } from "./traverse.ts";
 export type { ClosureOptions, ReachedNode } from "./traverse.ts";
 export { isGraphPath } from "./values.ts";

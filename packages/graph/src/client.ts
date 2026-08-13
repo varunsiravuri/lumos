@@ -187,6 +187,41 @@ export class HydraClient {
     );
   }
 
+  /**
+   * Idempotent counterpart to {@link createEdges}: MERGE on the relationship id
+   * and apply properties with a following SET.
+   *
+   * Re-running ingestion has to update rather than duplicate, and MERGE that
+   * changes nothing still commits, so a retry costs the same as the first write.
+   */
+  async mergeEdges(
+    type: string,
+    srcLabel: string,
+    dstLabel: string,
+    rows: EdgeRow[],
+    chunkSize = 1000,
+  ): Promise<number> {
+    if (rows.length === 0) return 0;
+    assertIdentifier(type, "relationship type");
+    assertIdentifier(srcLabel, "label");
+    assertIdentifier(dstLabel, "label");
+
+    const properties = Object.keys(rows[0]!).filter(
+      (key) => key !== "src" && key !== "dst" && key !== "rel",
+    );
+    const setClause = properties.length
+      ? ` SET ${properties.map((key) => `r.${assertIdentifier(key, "property")} = row.${key}`).join(", ")}`
+      : "";
+
+    return this.batch(
+      `UNWIND $rows AS row ` +
+        `MATCH (s:${srcLabel} {id: row.src}), (d:${dstLabel} {id: row.dst}) ` +
+        `MERGE (s)-[r:${type} {id: row.rel}]->(d)${setClause}`,
+      rows,
+      chunkSize,
+    );
+  }
+
   async ready(signal?: AbortSignal): Promise<boolean> {
     try {
       const response = await fetch(`${this.config.adminUrl}/readyz`, signal ? { signal } : {});

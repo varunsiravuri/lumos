@@ -12,8 +12,9 @@ import assert from "node:assert/strict";
 import { HydraClient } from "./client.ts";
 import { closure, reachedNodes } from "./traverse.ts";
 
-// A reserved id range keeps the probe from colliding with an ingested graph.
-const BASE = 900_000;
+// Ingested ids are allocated sequentially from 1, so the probe sits far above
+// anything a real repository will reach.
+const BASE = 9_000_000_000_000;
 const ID = {
   appEntry: BASE + 1,
   refreshSession: BASE + 2,
