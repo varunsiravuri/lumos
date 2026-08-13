@@ -1,0 +1,36 @@
+name: lumos
+
+services:
+  hydradb:
+    image: ghcr.io/hydra-db/hydradb:latest
+    container_name: lumos-hydradb
+    # The image runs as UID/GID 10001, but the bind-mounted store is owned by the
+    # host user. Running as the host user keeps the mounted directories writable.
+    user: "${HOST_UID:-501}:${HOST_GID:-20}"
+    ports:
+      - "7687:7687" # Bolt
+      - "8443:8443" # HTTP query API
+      - "9090:9090" # admin: /readyz and /metrics
+    environment:
+      CLOUD_PROVIDER: local
+      LOCAL_PATH: /data/store
+      GRAPH_NAMESPACE: default
+      GRAPH_ID: default
+      GRAPH_CELL_ID: cell-0
+      GRAPH_CELLS: cell-0
+      GRAPH_NODE_ID: node-0
+      GRAPH_BOLT_NODE_ADDRESSES: node-0=127.0.0.1:7687
+      GRAPH_ADVERTISED_BOLT_ADDR: 127.0.0.1:7687
+      GRAPH_DATA_CACHE_DIR: /data/cache
+      GRAPH_AUTH_TOKEN_FILE: /data/auth-token
+      GRAPH_ALLOW_PLAINTEXT: "true"
+      # graph-node's async query futures overflow the default thread stack; without
+      # this the node serves /readyz and then aborts on the first query.
+      RUST_MIN_STACK: "33554432"
+    volumes:
+      - ../.hydradb/store:/data/store
+      - ../.hydradb/cache:/data/cache
+      - ./auth-token:/data/auth-token:ro
+    # No container healthcheck: the image ships only `sh`, with no curl, wget or nc,
+    # so readiness cannot be probed from inside. Use `pnpm db:wait` from the host.
+    restart: unless-stopped

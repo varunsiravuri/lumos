@@ -1,0 +1,25 @@
+{
+  "name": "lumos",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Blast radius and exposure analysis for software supply chain compromises, on a HydraDB graph.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "db:up": "bash scripts/db-up.sh",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:reset": "bash scripts/db-reset.sh",
+    "db:wait": "bash scripts/wait-for-hydradb.sh",
+    "db:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "probe": "tsx --env-file-if-exists=.env packages/graph/src/probe.ts",
+    "typecheck": "tsc --build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}
