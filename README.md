@@ -50,11 +50,24 @@ in a graph:
 
 ## Status
 
-Early. The HydraDB integration and the core traversal are working and verified
-end to end; parsing, ingestion, retrieval and evaluation are in progress.
+Ingestion and impact analysis work end to end on real repositories. Retrieval
+and SWE-bench evaluation are in progress.
 
-Run `pnpm probe` to see impact analysis resolve over a call graph on a live
-HydraDB node.
+Measured on Django (`febefb175e`), on a MacBook with an M4 and 16GB of RAM:
+
+| | |
+|---|---|
+| Extraction | 2,926 files → 43,516 symbols in **8s** |
+| Load into HydraDB | 46,444 nodes and 103,968 edges in **17.9s** |
+| Impact query, depth 4 | **15–26ms** over 44,304 symbols |
+
+Asking what changing `HttpResponseBase.set_cookie` affects returns
+`delete_cookie` and `set_signed_cookie`, then `CookieStorage._update_cookie`
+and `SessionMiddleware.process_response` two hops out in different Django
+applications, along with the 15 tests that exercise them — each with the call
+path that justifies it.
+
+Run `pnpm probe` for a self-contained end-to-end check against a live node.
 
 ## Quickstart
 
