@@ -19,14 +19,29 @@ interface SymbolRecord {
 }
 interface CallRecord { t: "call"; src: string; dst: string; line: number }
 interface ImportRecord { t: "import"; src: string; dst: string }
+interface CochangeRecord { t: "cochange"; src: string; dst: string; commits: number; strength: number }
 interface StatsRecord { t: "stats"; [metric: string]: number | string }
 
-type Record_ = RepoRecord | FileRecord | SymbolRecord | CallRecord | ImportRecord | StatsRecord;
+type Record_ =
+  | RepoRecord
+  | FileRecord
+  | SymbolRecord
+  | CallRecord
+  | ImportRecord
+  | CochangeRecord
+  | StatsRecord;
 
 export interface LoadReport {
   repo: string;
   nodes: { repos: number; files: number; symbols: number };
-  edges: { contains: number; defines: number; calls: number; imports: number; covers: number };
+  edges: {
+    contains: number;
+    defines: number;
+    calls: number;
+    imports: number;
+    covers: number;
+    cochanges: number;
+  };
   /** Call and import edges whose endpoints were not in the extraction. */
   danglingEdges: number;
   extractorStats: Record<string, number | string>;
@@ -35,11 +50,13 @@ export interface LoadReport {
   edgesPerSecond: number;
 }
 
-async function readRecords(path: string): Promise<Record_[]> {
+async function readRecords(paths: string[]): Promise<Record_[]> {
   const records: Record_[] = [];
-  const stream = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
-  for await (const line of stream) {
-    if (line.length > 0) records.push(JSON.parse(line) as Record_);
+  for (const path of paths) {
+    const stream = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
+    for await (const line of stream) {
+      if (line.length > 0) records.push(JSON.parse(line) as Record_);
+    }
   }
   return records;
 }
@@ -55,24 +72,25 @@ async function readRecords(path: string): Promise<Record_[]> {
 export async function loadExtraction(
   client: HydraClient,
   registry: IdRegistry,
-  extractionPath: string,
+  extractionPaths: string[],
   options: { chunkSize?: number; onProgress?: (message: string) => void } = {},
 ): Promise<LoadReport> {
   const chunkSize = options.chunkSize ?? 1000;
   const progress = options.onProgress ?? (() => {});
   const started = performance.now();
 
-  const records = await readRecords(extractionPath);
+  const records = await readRecords(extractionPaths);
   progress(`read ${records.length.toLocaleString()} records`);
 
   const repoRecord = records.find((r): r is RepoRecord => r.t === "repo");
-  if (!repoRecord) throw new Error(`${extractionPath} has no repo record`);
+  if (!repoRecord) throw new Error(`${extractionPaths.join(", ")} has no repo record`);
   const repo = repoRecord.slug;
 
   const files = records.filter((r): r is FileRecord => r.t === "file");
   const symbols = records.filter((r): r is SymbolRecord => r.t === "symbol");
   const calls = records.filter((r): r is CallRecord => r.t === "call");
   const imports = records.filter((r): r is ImportRecord => r.t === "import");
+  const cochanges = records.filter((r): r is CochangeRecord => r.t === "cochange");
   const extractorStats = records.find((r): r is StatsRecord => r.t === "stats") ?? { t: "stats" };
 
   // --- ids -----------------------------------------------------------------
@@ -249,6 +267,27 @@ export async function loadExtraction(
     return [Number(src), Number(dst)];
   });
 
+  // Co-change is symmetric, and the miner emits one canonical direction per
+  // pair. Queries walk it with relDirection 'both' rather than the graph
+  // storing each pair twice, which would double every path through it.
+  const cochangePairs: [number, number][] = [];
+  const cochangeExtras: Record<string, number>[] = [];
+  const seenCochange = new Set<string>();
+
+  for (const record of cochanges) {
+    const src = fileId(record.src);
+    const dst = fileId(record.dst);
+    if (src === undefined || dst === undefined) {
+      dangling += 1;
+      continue;
+    }
+    const pairKey = `${src}\u0000${dst}`;
+    if (seenCochange.has(pairKey)) continue;
+    seenCochange.add(pairKey);
+    cochangePairs.push([src, dst]);
+    cochangeExtras.push({ commits: record.commits, strength: record.strength });
+  }
+
   await client.mergeEdges(Edge.CONTAINS, Label.Repo, Label.File, buildRows(Edge.CONTAINS, containsPairs), chunkSize);
   await client.mergeEdges(Edge.DEFINES, Label.File, Label.Symbol, buildRows(Edge.DEFINES, definesPairs), chunkSize);
   progress(`wrote ${(containsPairs.length + definesPairs.length).toLocaleString()} structure edges`);
@@ -260,10 +299,26 @@ export async function loadExtraction(
   await client.mergeEdges(Edge.COVERS, Label.Symbol, Label.Symbol, buildRows(Edge.COVERS, coversPairs), chunkSize);
   progress(`wrote ${importPairs.length.toLocaleString()} import and ${coversPairs.length.toLocaleString()} coverage edges`);
 
+  await client.mergeEdges(
+    Edge.CO_CHANGES,
+    Label.File,
+    Label.File,
+    buildRows(Edge.CO_CHANGES, cochangePairs, cochangeExtras),
+    chunkSize,
+  );
+  if (cochangePairs.length > 0) {
+    progress(`wrote ${cochangePairs.length.toLocaleString()} co-change edges`);
+  }
+
   const elapsedMs = performance.now() - started;
   const nodeCount = repoRows.length + fileRows.length + symbolRows.length;
   const edgeCount =
-    containsPairs.length + definesPairs.length + callPairs.length + importPairs.length + coversPairs.length;
+    containsPairs.length +
+    definesPairs.length +
+    callPairs.length +
+    importPairs.length +
+    coversPairs.length +
+    cochangePairs.length;
 
   const { t: _tag, ...stats } = extractorStats;
 
@@ -276,6 +331,7 @@ export async function loadExtraction(
       calls: callPairs.length,
       imports: importPairs.length,
       covers: coversPairs.length,
+      cochanges: cochangePairs.length,
     },
     danglingEdges: dangling,
     extractorStats: stats,

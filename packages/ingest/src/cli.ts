@@ -18,9 +18,8 @@ const { values, positionals } = parseArgs({
   },
 });
 
-const extractionPath = positionals[0];
-if (!extractionPath) {
-  console.error("usage: pnpm ingest <extraction.jsonl> [--registry path] [--chunk-size n]");
+if (positionals.length === 0) {
+  console.error("usage: pnpm ingest <extraction.jsonl> [cochange.jsonl ...] [--registry path] [--chunk-size n]");
   process.exit(1);
 }
 
@@ -33,7 +32,7 @@ if (!(await client.ready())) {
 const registry = new IdRegistry(values.registry!);
 
 try {
-  const report = await loadExtraction(client, registry, extractionPath, {
+  const report = await loadExtraction(client, registry, positionals, {
     chunkSize: Number(values["chunk-size"]),
     onProgress: (message) => console.log(`  ${message}`),
   });
@@ -47,7 +46,7 @@ try {
   console.log(
     `  edges   ${edges.toLocaleString()}  (${report.edges.calls.toLocaleString()} calls, ` +
       `${report.edges.defines.toLocaleString()} defines, ${report.edges.imports.toLocaleString()} imports, ` +
-      `${report.edges.covers.toLocaleString()} covers)`,
+      `${report.edges.covers.toLocaleString()} covers, ${report.edges.cochanges.toLocaleString()} co-changes)`,
   );
   if (report.danglingEdges > 0) {
     console.log(`  dropped ${report.danglingEdges.toLocaleString()} edges with unresolved endpoints`);
