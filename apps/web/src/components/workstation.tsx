@@ -1,11 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  BracketsCurly,
+  Bug,
+  ClockCounterClockwise,
+  Database,
+  Files,
+  GitBranch,
+  GitFork,
+  Graph,
+  House,
+  MagnifyingGlass,
+  PlugsConnected,
+  Plus,
+  ShieldCheck,
+  TerminalWindow,
+} from "@phosphor-icons/react";
 
 import { BlastGraph, type GraphLink, type GraphNode } from "./blast-graph";
-import { LumosLogo } from "./lumos-logo";
 
 const API = process.env.NEXT_PUBLIC_LUMOS_API ?? "http://127.0.0.1:8787";
 
@@ -175,17 +192,33 @@ interface ContextContract {
   traversal: RetrieveResult["traversal"];
 }
 
-type WorkspaceView = "overview" | "request" | "live" | "proof" | "guard" | "runs" | "connect";
+export type WorkspaceView =
+  | "welcome"
+  | "overview"
+  | "request"
+  | "live"
+  | "proof"
+  | "guard"
+  | "runs"
+  | "graph"
+  | "repository"
+  | "repositories"
+  | "connect";
 type CopyTarget = "path" | "markdown" | "json" | "config" | null;
 
-const views: { id: WorkspaceView; label: string; eyebrow: string }[] = [
-  { id: "overview", label: "Overview", eyebrow: "Repository health" },
-  { id: "request", label: "New change", eyebrow: "Run a preflight" },
-  { id: "live", label: "Live run", eyebrow: "Watch the trace" },
-  { id: "proof", label: "Proof", eyebrow: "Inspect files and tests" },
-  { id: "guard", label: "Patch Guard", eyebrow: "Verify the edit" },
-  { id: "runs", label: "Runs", eyebrow: "Reopen prior work" },
-  { id: "connect", label: "Connect agent", eyebrow: "Use MCP in your IDE" },
+const workspacePages: { id: WorkspaceView; label: string; eyebrow: string }[] = [
+  { id: "overview", label: "Home", eyebrow: "Django demo" },
+  { id: "request", label: "New preflight", eyebrow: "Describe a change" },
+  { id: "runs", label: "Runs", eyebrow: "Saved evidence" },
+  { id: "graph", label: "Graph explorer", eyebrow: "Follow a symbol" },
+  { id: "repositories", label: "Repositories", eyebrow: "Manage source code" },
+  { id: "connect", label: "Agent connection", eyebrow: "MCP and CLI" },
+];
+
+const runPages: { id: WorkspaceView; label: string; eyebrow: string }[] = [
+  { id: "live", label: "Summary", eyebrow: "Trace and handoff" },
+  { id: "proof", label: "Evidence", eyebrow: "Files, paths, and tests" },
+  { id: "guard", label: "Patch Guard", eyebrow: "Verify the resulting edit" },
 ];
 
 const SAMPLE_ISSUE =
@@ -195,7 +228,7 @@ const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-panel";
 
 const buttonBase =
-  "inline-flex min-h-11 items-center justify-center rounded-full px-4 text-sm font-semibold transition-colors duration-150 disabled:pointer-events-none disabled:opacity-45";
+  "inline-flex min-h-10 items-center justify-center rounded-lg px-4 text-sm font-semibold transition-[background-color,border-color,color,transform] duration-100 active:translate-y-px disabled:pointer-events-none disabled:opacity-45";
 
 function fmt(n: number): string {
   return n.toLocaleString("en-US");
@@ -203,11 +236,6 @@ function fmt(n: number): string {
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
-}
-
-function repoLabel(repo?: string): string {
-  if (!repo) return "No repo loaded";
-  return repo.includes("/") ? repo.split("/").at(-1) ?? repo : repo;
 }
 
 function shortPath(path: string): string {
@@ -224,8 +252,19 @@ function relationLabel(evidence: Evidence | undefined): string {
   return "graph evidence";
 }
 
-function validView(value: string | null): value is WorkspaceView {
-  return value === "overview" || value === "request" || value === "live" || value === "proof" || value === "guard" || value === "runs" || value === "connect";
+function workspaceHref(view: WorkspaceView, runId?: string | null): string {
+  if (view === "welcome") return "/app";
+  if (view === "overview") return "/app/workspace";
+  if (view === "request") return "/app/new";
+  if (view === "runs") return "/app/runs";
+  if (view === "graph") return "/app/graph";
+  if (view === "repository") return "/app/repository";
+  if (view === "repositories") return "/app/repositories";
+  if (view === "connect") return "/app/connect";
+  if (!runId) return "/app/new";
+  if (view === "proof") return `/app/runs/${encodeURIComponent(runId)}/proof`;
+  if (view === "guard") return `/app/runs/${encodeURIComponent(runId)}/guard`;
+  return `/app/runs/${encodeURIComponent(runId)}`;
 }
 
 function timeAgo(value: string): string {
@@ -263,7 +302,7 @@ function contractMarkdown(contract: ContextContract): string {
     )
     .join("\n");
   const tests = contract.tests.length
-    ? contract.tests.map((test) => `- \`${test.symbol}\` — ${test.via}`).join("\n")
+    ? contract.tests.map((test) => `- \`${test.symbol}\` - ${test.via}`).join("\n")
     : "- No covering tests were found.";
 
   return `# Lumos context handoff\n\n## Request\n${contract.request}\n\n## Ranked targets\n${targets}\n\n## Tests\n${tests}\n\n## Graph traversal\n- Engine: ${contract.traversal.engine}\n- Direction: ${contract.traversal.direction}\n- Relationships: ${contract.traversal.relTypes.join(", ")}\n- Paths checked: ${contract.traversal.pathCount}\n- Walk time: ${contract.traversal.elapsedMs} ms`;
@@ -276,19 +315,16 @@ function canonicalJson(value: unknown): string {
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
 }
 
-export function Workstation() {
+export function Workstation({ view = "welcome", runId: initialRunId = null }: { view?: WorkspaceView; runId?: string | null }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const requestedView = searchParams.get("view");
-  const view: WorkspaceView = validView(requestedView) ? requestedView : "overview";
   const [issue, setIssue] = useState("");
   const [activeRequest, setActiveRequest] = useState("");
   const [requestError, setRequestError] = useState<string | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [evalSummary, setEvalSummary] = useState<EvalSummary | null>(null);
+  const [, setEvalSummary] = useState<EvalSummary | null>(null);
   const [demo, setDemo] = useState<Demo | null>(null);
   const [gold, setGold] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(Boolean(initialRunId));
   const [error, setError] = useState<string | null>(null);
   const [retrieve, setRetrieve] = useState<RetrieveResult | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -303,11 +339,13 @@ export function Workstation() {
   const issueRef = useRef<HTMLTextAreaElement>(null);
   const fileRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
+  const currentRunId = retrieve?.runId ?? initialRunId;
+
   const navigate = useCallback((nextView: WorkspaceView, replace = false) => {
-    const href = `/app?view=${nextView}`;
+    const href = workspaceHref(nextView, currentRunId);
     if (replace) router.replace(href, { scroll: false });
     else router.push(href, { scroll: false });
-  }, [router]);
+  }, [currentRunId, router]);
 
   const refreshMeta = useCallback(async () => {
     try {
@@ -366,6 +404,28 @@ export function Workstation() {
       window.clearInterval(id);
     };
   }, [refreshEval, refreshEvents, refreshMeta, refreshRuns]);
+
+  useEffect(() => {
+    if (!initialRunId || retrieve?.runId === initialRunId) return;
+    const controller = new AbortController();
+    void fetch(`${API}/runs/${encodeURIComponent(initialRunId)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const body = (await response.json()) as StoredRun & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "run could not be opened");
+        const restored = { ...body.result, request: body.result.request || body.request };
+        setActiveRequest(compactRequest(body.request));
+        setRetrieve(restored);
+        setSelectedFile(restored.ranked[0]?.path ?? null);
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "run could not be opened");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setBusy(false);
+      });
+    return () => controller.abort();
+  }, [initialRunId, retrieve?.runId]);
 
   const lexicalRank = useMemo(
     () => new Map(retrieve?.lexical.map((file, index) => [file.path, index + 1]) ?? []),
@@ -500,7 +560,7 @@ export function Workstation() {
       setRetrieve(body);
       setSelectedFile(body.ranked[0]?.path ?? null);
       await Promise.all([refreshRuns(), refreshEvents(), refreshMeta()]);
-      navigate("live");
+      router.push(workspaceHref("live", body.runId), { scroll: false });
     } catch (err) {
       setError(err instanceof Error ? err.message : "retrieve failed");
     } finally {
@@ -519,7 +579,7 @@ export function Workstation() {
       setActiveRequest(compactRequest(body.request));
       setRetrieve(restored);
       setSelectedFile(restored.ranked[0]?.path ?? null);
-      navigate(destination);
+      router.push(workspaceHref(destination, runId), { scroll: false });
     } catch (err) {
       setError(err instanceof Error ? err.message : "run could not be opened");
     } finally {
@@ -544,7 +604,7 @@ export function Workstation() {
     }
   }
 
-  async function walkSymbol(symbol: string) {
+  async function walkSymbol(symbol: string, openOverlay = true) {
     if (!symbol) return;
     setBusy(true);
     setError(null);
@@ -558,7 +618,7 @@ export function Workstation() {
       if (!response.ok) throw new Error(body.error ?? "impact failed");
       setImpact(body);
       setSelectedNode(body.seed.qualname);
-      setMapOpen(true);
+      setMapOpen(openOverlay);
     } catch (err) {
       setError(err instanceof Error ? err.message : "impact failed");
     } finally {
@@ -588,91 +648,87 @@ export function Workstation() {
     URL.revokeObjectURL(href);
   }
 
+  const repositorySelected = view !== "welcome" && view !== "repository";
+
   return (
-    <div className="workstation-sky min-h-dvh overflow-hidden text-foreground lg:p-3">
-      <div className="workstation-shell flex h-dvh flex-col overflow-hidden border-sky-line bg-panel max-lg:border-t-4 max-lg:border-t-sky-bg lg:h-[calc(100dvh-1.5rem)] lg:rounded-2xl lg:border">
-        <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line bg-panel px-4 lg:px-5">
-          <div className="flex min-w-0 items-center gap-4">
-            <Link href="/" className={`shrink-0 rounded-sm ${focusRing}`} aria-label="Back to Lumos landing page">
-              <LumosLogo size="sm" tone="app" />
-            </Link>
-            <div className="hidden min-w-0 border-l border-line pl-4 sm:block">
-              <p className="truncate text-sm font-semibold">{repoLabel(meta?.repo)}</p>
-              <p className="font-mono text-[11px] text-muted">{fmt(meta?.files ?? 0)} indexed files</p>
-            </div>
+    <div className="workstation-sky min-h-dvh overflow-hidden text-foreground">
+      <div className="workstation-shell flex h-dvh overflow-hidden bg-background">
+        <aside className="platform-sidebar hidden w-[16.5rem] shrink-0 flex-col border-r border-line lg:flex">
+          <div className="mx-4 mt-5 flex items-center gap-3">
+            <Link href="/" className={`grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted hover:bg-inset hover:text-foreground ${focusRing}`} aria-label="Back to Lumos site"><ArrowLeft size={17} /></Link>
+            <Link href="/app" className={`rounded-sm text-[15px] font-semibold tracking-[0.42em] text-foreground ${focusRing}`} aria-label="Lumos workspace home">LUMOS</Link>
           </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <StatusPill ready={graphReady}>{graphReady ? "graph live" : "graph offline"}</StatusPill>
-            <Link href="/docs" className={`${buttonBase} hidden border border-line bg-panel px-4 text-foreground hover:border-lexical/60 sm:inline-flex ${focusRing}`}>
-              Docs
-            </Link>
-            <Link href="/" className={`${buttonBase} border border-line bg-panel px-4 text-foreground hover:border-lexical/60 ${focusRing}`}>
-              Site
-            </Link>
+          <Link href={repositorySelected ? "/app/repositories" : "/app/repository"} className={`mx-3 mt-7 flex items-center gap-3 rounded-lg border border-[#c8dce7] bg-panel px-3 py-3 text-left hover:border-[#8fbdd4] ${focusRing}`}>
+            <span className="grid h-8 w-8 shrink-0 place-items-center text-lexical"><GitFork size={19} /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold">{repositorySelected ? "Django demo" : "Choose repository"}</span>
+              <span className="mt-0.5 block truncate text-[11px] text-muted">{repositorySelected ? `${fmt(meta?.files ?? 0)} indexed files` : "No source selected"}</span>
+            </span>
+          </Link>
+          <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+            <WorkspaceNav view={view} runId={currentRunId} runs={runs} events={events} connected={repositorySelected} />
           </div>
-        </header>
+        </aside>
 
-        {!graphReady ? (
-          <Notice tone="blue" message={<>The HydraDB graph is offline. Start it with <code className="font-mono font-semibold text-foreground">pnpm db:up</code>.</>}>
-            <button type="button" onClick={() => void refreshMeta()} className={`${buttonBase} min-h-9 border border-line bg-panel px-3 text-foreground ${focusRing}`}>
-              Retry
-            </button>
-          </Notice>
-        ) : null}
-
-        {error ? (
-          <Notice tone="orange" message={error}>
-            <button type="button" onClick={() => setError(null)} className={`${buttonBase} min-h-9 border border-[#efc7b3] bg-panel px-3 text-foreground ${focusRing}`}>
-              Dismiss
-            </button>
-          </Notice>
-        ) : null}
-
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <aside className="hidden w-[17.5rem] shrink-0 flex-col border-r border-line bg-panel p-4 lg:flex">
-            <div className="px-2 pb-4 pt-2">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">Lumos workspace</p>
-              <p className="mt-2 text-sm leading-5 text-muted">Preflight the change. Give the agent proof. Verify what it changed.</p>
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          {repositorySelected ? <header className="platform-topbar flex min-h-14 shrink-0 items-center justify-between border-b border-line px-4 lg:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <Link href="/" className={`grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-inset hover:text-foreground lg:hidden ${focusRing}`} aria-label="Back to Lumos site"><ArrowLeft size={16} /></Link>
+              <Link href="/app" className={`text-[13px] font-semibold tracking-[0.32em] lg:hidden ${focusRing}`}>LUMOS</Link>
+              <span className="hidden h-4 w-px bg-line sm:block lg:hidden" />
+              <p className="hidden truncate text-sm font-medium text-foreground sm:block">{workspaceTitle(view)}</p>
             </div>
-            <WorkspaceNav view={view} retrieve={retrieve} runs={runs} events={events} onNavigate={navigate} />
-            <div className="mt-auto rounded-2xl border border-line bg-inset p-4">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-[10px] text-muted">Repository</span>
-                <span className={`h-2 w-2 rounded-full ${graphReady ? "bg-[#2f9e68]" : "bg-accent"}`} />
-              </div>
-              <p className="mt-2 truncate text-sm font-semibold">{repoLabel(meta?.repo)}</p>
-              <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3">
-                <SmallStat label="Files" value={fmt(meta?.files ?? 0)} />
-                <SmallStat label="Engine" value={meta?.engine ?? "offline"} />
-              </dl>
+            <div className="flex items-center gap-3">
+              {repositorySelected ? <span className="hidden md:block"><StatusPill ready={graphReady}>{graphReady ? "Graph ready" : "Graph offline"}</StatusPill></span> : null}
+              {repositorySelected && view !== "request" ? (
+                <Link href="/app/new" className={`${buttonBase} gap-2 bg-foreground px-3.5 text-panel hover:bg-[#2a3540] ${focusRing}`}>
+                  <Plus size={15} weight="bold" /> <span className="sm:hidden">New</span><span className="hidden sm:inline">New preflight</span>
+                </Link>
+              ) : null}
             </div>
-          </aside>
+          </header> : (
+            <header className="platform-topbar flex min-h-14 shrink-0 items-center gap-3 border-b border-line px-4 lg:hidden">
+              <Link href="/" className={`grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-inset hover:text-foreground ${focusRing}`} aria-label="Back to Lumos site"><ArrowLeft size={16} /></Link>
+              <Link href="/app" className={`text-[13px] font-semibold tracking-[0.32em] ${focusRing}`}>LUMOS</Link>
+            </header>
+          )}
 
-          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-            <div className="border-b border-line bg-panel lg:hidden">
-              <div className="px-4 py-2.5 sm:hidden">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">{repoLabel(meta?.repo)}</p>
-                  <p className="font-mono text-[10px] text-muted">{fmt(meta?.files ?? 0)} indexed files</p>
-                </div>
-              </div>
-              <WorkspaceNav view={view} retrieve={retrieve} runs={runs} events={events} onNavigate={navigate} mobile />
-            </div>
+          {!graphReady && repositorySelected ? (
+            <Notice tone="blue" message={<>HydraDB is offline. Start it with <code className="font-mono font-semibold text-foreground">pnpm db:up</code>.</>}>
+              <button type="button" onClick={() => void refreshMeta()} className={`${buttonBase} min-h-8 border border-line bg-panel px-3 text-foreground ${focusRing}`}>Retry</button>
+            </Notice>
+          ) : null}
 
-            {retrieve ? <RunContext request={activeRequest} retrieve={retrieve} onRequest={() => navigate("request")} /> : null}
+          {error ? (
+            <Notice tone="orange" message={error}>
+              {initialRunId && !retrieve ? (
+                <Link href="/app/runs" className={`${buttonBase} min-h-8 border border-[#efc7b3] bg-panel px-3 text-foreground ${focusRing}`}>Open runs</Link>
+              ) : (
+                <button type="button" onClick={() => setError(null)} className={`${buttonBase} min-h-8 border border-[#efc7b3] bg-panel px-3 text-foreground ${focusRing}`}>Dismiss</button>
+              )}
+            </Notice>
+          ) : null}
+
+          {repositorySelected ? <div className="border-b border-line bg-panel lg:hidden">
+            <WorkspaceNav view={view} runId={currentRunId} runs={runs} events={events} connected={repositorySelected} mobile />
+          </div> : null}
+
+            {retrieve && (view === "live" || view === "proof" || view === "guard") ? (
+              <RunContext view={view} request={activeRequest} retrieve={retrieve} />
+            ) : null}
 
             <main className="min-h-0 flex-1 overflow-y-auto" aria-busy={busy}>
+              {busy && initialRunId && !retrieve ? <ResultSkeleton /> : null}
+              {view === "welcome" ? (
+                <WelcomeView graphReady={graphReady} onDemo={() => navigate("overview")} onRepository={() => navigate("repository")} />
+              ) : null}
               {view === "overview" ? (
                 <OverviewView
                   meta={meta}
-                  summary={evalSummary}
-                  latestRun={runs[0] ?? null}
-                  events={events}
+                  runs={runs}
                   graphReady={graphReady}
                   onNew={() => navigate("request")}
-                  onDemo={() => void loadDemo()}
                   onOpenRun={(id) => void openRun(id)}
-                  onConnect={() => navigate("connect")}
                 />
               ) : null}
               {view === "request" ? (
@@ -693,7 +749,7 @@ export function Workstation() {
                   onProof={() => navigate("live")}
                 />
               ) : null}
-              {view === "live" ? (
+              {view === "live" && (!initialRunId || retrieve) ? (
                 <LiveRunView
                   retrieve={retrieve}
                   request={activeRequest}
@@ -710,7 +766,7 @@ export function Workstation() {
                   onGuard={() => navigate("guard")}
                 />
               ) : null}
-              {view === "proof" ? (
+              {view === "proof" && (!initialRunId || retrieve) ? (
                 <ProofView
                   retrieve={retrieve}
                   busy={busy}
@@ -730,7 +786,7 @@ export function Workstation() {
                   onHandoff={() => navigate("live")}
                 />
               ) : null}
-              {view === "guard" ? (
+              {view === "guard" && (!initialRunId || retrieve) ? (
                 <PatchGuardView
                   key={retrieve?.runId ?? "no-run"}
                   retrieve={retrieve}
@@ -743,13 +799,27 @@ export function Workstation() {
                   runs={runs}
                   loading={runsLoading}
                   currentRunId={retrieve?.runId ?? null}
-                  onOpen={(id) => void openRun(id)}
                   onRefresh={() => void refreshRuns()}
                   onNew={() => navigate("request")}
                 />
               ) : null}
               {view === "connect" ? (
                 <ConnectAgentView meta={meta} events={events} copied={copied} onCopy={copyText} />
+              ) : null}
+              {view === "repository" || view === "repositories" ? (
+                <RepositoryView connected={view === "repositories"} meta={meta} graphReady={graphReady} onDemo={() => navigate("overview")} copied={copied} onCopy={copyText} />
+              ) : null}
+              {view === "graph" ? (
+                <GraphExplorerView
+                  impact={impact}
+                  graphNodes={graphNodes}
+                  graphLinks={graphLinks}
+                  selectedNode={selectedNode}
+                  graphReady={graphReady}
+                  busy={busy}
+                  onWalk={(symbol) => void walkSymbol(symbol, false)}
+                  onSelect={setSelectedNode}
+                />
               ) : null}
             </main>
 
@@ -773,7 +843,6 @@ export function Workstation() {
               </section>
             ) : null}
           </div>
-        </div>
       </div>
     </div>
   );
@@ -781,89 +850,158 @@ export function Workstation() {
 
 function WorkspaceNav({
   view,
-  retrieve,
+  runId,
   runs,
   events,
-  onNavigate,
+  connected,
   mobile = false,
 }: {
   view: WorkspaceView;
-  retrieve: RetrieveResult | null;
+  runId: string | null;
   runs: RunSummary[];
   events: ActivityEvent[];
-  onNavigate: (view: WorkspaceView) => void;
+  connected: boolean;
   mobile?: boolean;
 }) {
   if (mobile) {
+    if (!connected) return null;
+    const mobilePages = workspacePages.slice(0, 4);
     return (
-      <nav className="flex overflow-x-auto px-2" aria-label="Workspace views">
-        {views.map((item) => (
-          <button
+      <nav className="grid grid-cols-4 px-2" aria-label="Workspace pages">
+        {mobilePages.map((item) => (
+          <Link
             key={item.id}
-            type="button"
+            href={workspaceHref(item.id, runId)}
             aria-current={view === item.id ? "page" : undefined}
-            onClick={() => onNavigate(item.id)}
-            className={`relative min-h-12 min-w-[7rem] px-3 text-xs font-semibold ${focusRing} ${view === item.id ? "text-lexical" : "text-muted"}`}
+            className={`relative flex min-h-12 min-w-0 items-center justify-center gap-2 px-1 text-center text-[11px] font-semibold sm:text-xs ${focusRing} ${view === item.id ? "text-foreground" : "text-muted"}`}
           >
+            <ViewGlyph view={item.id} active={view === item.id} compact />
             {item.label}
-            {view === item.id ? <span className="absolute inset-x-3 bottom-0 h-0.5 bg-lexical" /> : null}
-          </button>
+            {view === item.id ? <span className="absolute inset-x-5 bottom-0 h-0.5 bg-accent" /> : null}
+          </Link>
         ))}
       </nav>
     );
   }
 
   return (
-    <nav className="space-y-1" aria-label="Workspace views">
-      {views.map((item, index) => {
-        const active = view === item.id;
-        const status =
-          item.id === "overview" ? "home" :
-          item.id === "request" ? "new" :
-          item.id === "live" ? (retrieve ? "active" : "waiting") :
-          item.id === "proof" ? `${retrieve?.ranked.length ?? 0} files` :
-          item.id === "guard" ? (retrieve?.quality.mode && retrieve.quality.mode !== "text-only" ? "ready" : retrieve ? "needs proof" : "waiting") :
-          item.id === "runs" ? String(runs.length) :
-          `${events.filter((event) => event.source === "mcp").length} calls`;
-        return (
-          <button
-            key={item.id}
-            type="button"
-            aria-current={active ? "page" : undefined}
-            onClick={() => onNavigate(item.id)}
-            className={`group grid min-h-[4.6rem] w-full grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 text-left transition-colors duration-150 ${focusRing} ${active ? "border-[#acd2e7] bg-[#eef8fe]" : "border-transparent hover:border-line hover:bg-inset"}`}
-          >
-            <ViewGlyph view={item.id} active={active} />
-            <span className="min-w-0">
-              <span className={`block text-sm font-semibold ${active ? "text-foreground" : "text-muted group-hover:text-foreground"}`}>{item.label}</span>
-              <span className="mt-0.5 block truncate text-[11px] text-muted">{item.eyebrow}</span>
-            </span>
-            <span className={`font-mono text-[9px] ${active ? "text-lexical" : "text-muted"}`}>{index === 0 ? status : status}</span>
-          </button>
-        );
-      })}
+    <nav aria-label="Workspace pages">
+      {connected ? (
+        <>
+          <p className="px-2 text-[10px] font-medium text-muted">Workspace</p>
+          <div className="mt-1 space-y-0.5">
+            {workspacePages.slice(0, 3).map((item) => (
+              <WorkspaceLink key={item.id} item={item} active={view === item.id} href={workspaceHref(item.id, runId)} status={item.id === "runs" ? String(runs.length) : undefined} />
+            ))}
+          </div>
+          <p className="mt-5 px-2 text-[10px] font-medium text-muted">Analyze</p>
+          <div className="mt-1 space-y-0.5">
+            <WorkspaceLink item={workspacePages[3]} active={view === "graph"} href={workspaceHref("graph", runId)} />
+          </div>
+        </>
+      ) : (
+        <OnboardingFlow active={view === "repository" ? 1 : 1} />
+      )}
+
+      {runId && connected ? (
+        <div className="mt-6">
+          <div className="flex items-center justify-between gap-3 px-3">
+            <p className="text-[10px] font-medium text-muted">Current run</p>
+            <span className="max-w-24 truncate font-mono text-[8px] text-lexical" title={runId}>{runId}</span>
+          </div>
+          <div className="mt-1 space-y-0.5">
+            {runPages.map((item) => (
+              <WorkspaceLink key={item.id} item={item} active={view === item.id} href={workspaceHref(item.id, runId)} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {connected ? <div className="mt-5">
+        <p className="px-2 text-[10px] font-medium text-muted">Setup</p>
+        <div className="mt-1 space-y-0.5">
+          <WorkspaceLink item={workspacePages[4]} active={view === "repositories"} href={workspaceHref("repositories", runId)} />
+          <WorkspaceLink
+            item={workspacePages[5]}
+            active={view === "connect"}
+            href={workspaceHref("connect", runId)}
+            status={`${events.filter((event) => event.source === "mcp").length} calls`}
+          />
+        </div>
+      </div> : null}
     </nav>
   );
 }
 
-function ViewGlyph({ view, active }: { view: WorkspaceView; active: boolean }) {
-  const glyph: Record<WorkspaceView, string> = {
-    overview: "⌂",
-    request: "+",
-    live: "↻",
-    proof: "•••",
-    guard: "✓",
-    runs: "≡",
-    connect: "↗",
-  };
+function OnboardingFlow({ active }: { active: 1 | 2 | 3 }) {
+  const steps = [
+    { number: 1, title: "Choose source", detail: "Demo or local repository" },
+    { number: 2, title: "Run a preflight", detail: "Describe one code change" },
+    { number: 3, title: "Connect an agent", detail: "Use the proven context" },
+  ];
   return (
-    <span aria-hidden="true" className={`grid h-8 w-8 place-items-center rounded-xl border font-mono text-xs ${active ? "border-[#9ccbe5] bg-panel text-lexical" : "border-line bg-panel text-muted"}`}>
-      {glyph[view]}
-    </span>
+    <div className="px-2">
+      <p className="text-[10px] font-medium text-muted">Setup flow</p>
+      <ol className="mt-3 space-y-4">
+        {steps.map((step) => (
+          <li key={step.number} className="grid grid-cols-[1.75rem_minmax(0,1fr)] gap-3">
+            <span className={`grid h-7 w-7 place-items-center rounded-full border font-mono text-[10px] ${step.number === active ? "border-[#7eb8d7] bg-[#e5f4fc] text-[#1f638b]" : "border-line bg-panel text-muted"}`}>{step.number}</span>
+            <span>
+              <span className={`block text-sm font-medium ${step.number === active ? "text-foreground" : "text-muted"}`}>{step.title}</span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-muted">{step.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
-function RunContext({ request, retrieve, onRequest }: { request: string; retrieve: RetrieveResult; onRequest: () => void }) {
+function WorkspaceLink({ item, active, href, status }: { item: { id: WorkspaceView; label: string; eyebrow: string }; active: boolean; href: string; status?: string }) {
+  return (
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      className={`group grid min-h-10 w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-2 text-left transition-colors duration-100 ${focusRing} ${active ? "bg-[#dfeff8] text-[#173c54]" : "text-muted hover:bg-[#edf6fb] hover:text-foreground"}`}
+    >
+      <ViewGlyph view={item.id} active={active} />
+      <span className="min-w-0 truncate text-sm font-medium">{item.label}</span>
+      {status ? <span className="font-mono text-[9px] text-muted">{status}</span> : null}
+    </Link>
+  );
+}
+
+function ViewGlyph({ view, active, compact = false }: { view: WorkspaceView; active: boolean; compact?: boolean }) {
+  const props = { size: compact ? 16 : 17, weight: active ? "bold" as const : "regular" as const };
+  if (view === "welcome" || view === "overview") return <House {...props} />;
+  if (view === "request") return <Plus {...props} />;
+  if (view === "live") return <BracketsCurly {...props} />;
+  if (view === "proof") return <Files {...props} />;
+  if (view === "guard") return <ShieldCheck {...props} />;
+  if (view === "runs") return <ClockCounterClockwise {...props} />;
+  if (view === "graph") return <Graph {...props} />;
+  if (view === "repository" || view === "repositories") return <Database {...props} />;
+  return <PlugsConnected {...props} />;
+}
+
+function workspaceTitle(view: WorkspaceView): string {
+  const titles: Record<WorkspaceView, string> = {
+    welcome: "Start",
+    overview: "Django demo",
+    request: "New preflight",
+    live: "Run summary",
+    proof: "Evidence",
+    guard: "Patch Guard",
+    runs: "Runs",
+    graph: "Graph explorer",
+    repository: "Repositories",
+    repositories: "Repositories",
+    connect: "Agent connection",
+  };
+  return titles[view];
+}
+
+function RunContext({ view, request, retrieve }: { view: WorkspaceView; request: string; retrieve: RetrieveResult }) {
   const quality = retrieve.quality ?? {
     filesChecked: 0,
     filesSelected: retrieve.ranked.length,
@@ -872,147 +1010,131 @@ function RunContext({ request, retrieve, onRequest }: { request: string; retriev
     mode: "text-only" as const,
   };
   return (
-    <section className="flex shrink-0 items-center gap-3 border-b border-line bg-panel px-4 py-2.5 lg:px-6" aria-label="Current run">
-      <span className="h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_0_4px_rgb(198_95_44_/_0.1)]" />
-      <button type="button" onClick={onRequest} className={`min-w-0 flex-1 truncate text-left text-xs font-medium text-foreground hover:text-lexical ${focusRing}`} title={request}>
-        {request}
-      </button>
-      <div className="hidden shrink-0 items-center gap-4 font-mono text-[10px] text-muted sm:flex">
-        <span>{fmt(quality.filesChecked)} checked</span>
-        <span>{quality.filesSelected} selected</span>
-        <span>{quality.testsFound} tests</span>
+    <section className="shrink-0 border-b border-line bg-panel" aria-label="Current run">
+      <div className="flex min-h-11 items-center gap-3 px-4 lg:px-6">
+        <span className="h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_0_4px_rgb(198_95_44_/_0.1)]" />
+        <p className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={request}>{request}</p>
+        <div className="hidden shrink-0 items-center gap-4 font-mono text-[10px] text-muted sm:flex">
+          <span>{fmt(quality.filesChecked)} checked</span><span>{quality.filesSelected} selected</span><span>{quality.testsFound} tests</span>
+        </div>
       </div>
+      <nav className="flex overflow-x-auto px-2 sm:px-4 lg:hidden" aria-label="Run pages">
+        {runPages.map((page) => (
+          <Link key={page.id} href={workspaceHref(page.id, retrieve.runId)} aria-current={view === page.id ? "page" : undefined} className={`relative flex min-h-11 min-w-28 items-center justify-center px-3 text-xs font-semibold ${focusRing} ${view === page.id ? "text-lexical" : "text-muted"}`}>
+            {page.label}{view === page.id ? <span className="absolute inset-x-3 bottom-0 h-0.5 bg-lexical" /> : null}
+          </Link>
+        ))}
+      </nav>
     </section>
+  );
+}
+
+function WelcomeView({ graphReady, onDemo, onRepository }: { graphReady: boolean; onDemo: () => void; onRepository: () => void }) {
+  return (
+    <div className="onboarding-surface mx-auto flex min-h-full w-full max-w-[1080px] items-start px-5 py-12 sm:px-10 lg:items-center lg:py-16">
+      <section className="w-full">
+        <div className="max-w-2xl">
+          <p className="text-sm font-medium text-accent">Context before code</p>
+          <h1 className="mt-3 text-[2.55rem] font-semibold leading-[1.06] tracking-[-0.045em] sm:text-5xl">Give your agent the right files.</h1>
+          <p className="mt-4 max-w-xl text-base leading-7 text-muted">Lumos proves which files and tests matter before an AI edits your repository.</p>
+        </div>
+
+        <div className="mt-10 overflow-hidden rounded-xl border border-[#bdd7e6] bg-panel shadow-[0_18px_48px_rgb(31_99_139_/_0.07)]">
+          <button type="button" onClick={onDemo} className={`group grid w-full grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-4 border-b border-[#d2e3ec] px-5 py-5 text-left hover:bg-[#eff8fd] ${focusRing}`}>
+            <span className="grid h-11 w-11 place-items-center text-[#1f6e9b]"><Bug size={23} /></span>
+            <span>
+              <span className="flex items-center gap-2 text-sm font-semibold">Try Lumos on Django <span className={`h-1.5 w-1.5 rounded-full ${graphReady ? "bg-[#2f9e68]" : "bg-accent"}`} /></span>
+              <span className="mt-1 block text-sm text-muted">Use a real bug to see ranked files, graph proof, and connected tests.</span>
+            </span>
+            <ArrowRight size={18} className="text-muted transition-transform duration-100 group-hover:translate-x-0.5" />
+          </button>
+          <button type="button" onClick={onRepository} className={`group grid w-full grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-4 px-5 py-5 text-left hover:bg-[#eff8fd] ${focusRing}`}>
+            <span className="grid h-11 w-11 place-items-center text-[#1f6e9b]"><TerminalWindow size={23} /></span>
+            <span>
+              <span className="block text-sm font-semibold">Use your own repository</span>
+              <span className="mt-1 block text-sm text-muted">Index a local Python codebase and open its workspace.</span>
+            </span>
+            <ArrowRight size={18} className="text-muted transition-transform duration-100 group-hover:translate-x-0.5" />
+          </button>
+        </div>
+
+        <div className="mt-5 flex flex-col gap-2 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
+          <p className="flex items-center gap-2"><ShieldCheck size={15} /> No model key is required.</p>
+          <p>Choose a source, run a preflight, then connect your agent.</p>
+        </div>
+      </section>
+    </div>
   );
 }
 
 function OverviewView({
   meta,
-  summary,
-  latestRun,
-  events,
+  runs,
   graphReady,
   onNew,
-  onDemo,
   onOpenRun,
-  onConnect,
 }: {
   meta: Meta | null;
-  summary: EvalSummary | null;
-  latestRun: RunSummary | null;
-  events: ActivityEvent[];
+  runs: RunSummary[];
   graphReady: boolean;
   onNew: () => void;
-  onDemo: () => void;
   onOpenRun: (id: string) => void;
-  onConnect: () => void;
 }) {
   return (
-    <div className="mx-auto w-full max-w-[1380px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
-      <section className="grid gap-8 rounded-[1.8rem] border border-[#b8dceb] bg-panel p-6 shadow-[0_24px_70px_rgb(36_112_158_/_0.09)] lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)] lg:p-9">
-        <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">Repository control room</p>
-            <StatusPill ready={graphReady}>{graphReady ? "ready for agent preflight" : "graph offline"}</StatusPill>
-          </div>
-          <h1 className="mt-5 max-w-4xl text-4xl font-semibold leading-[1.03] tracking-[-0.045em] sm:text-5xl">Know the change is safe before—and after—the agent edits.</h1>
-          <p className="mt-5 max-w-3xl text-base leading-7 text-muted">Lumos searches the full repository, proves the smallest relevant context through HydraDB, hands it to your coding agent, then checks whether the patch stayed inside that proof.</p>
-          <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-            <button type="button" disabled={!graphReady} onClick={onNew} className={`${buttonBase} bg-accent px-5 text-white hover:bg-[#a94d23] ${focusRing}`}>Preflight a change</button>
-            <button type="button" disabled={!graphReady} onClick={onDemo} className={`${buttonBase} border border-line bg-panel px-5 text-foreground hover:border-lexical/60 ${focusRing}`}>Run the Django proof case</button>
-          </div>
+    <div className="mx-auto w-full max-w-[1160px] px-5 py-8 sm:px-8 lg:py-10">
+      <section className="max-w-3xl">
+        <div className="flex items-center gap-2 text-sm text-muted">
+          <GitBranch size={16} /> <span>Django demo</span>
         </div>
-        <div className="rounded-[1.4rem] border border-line bg-inset p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[10px] text-muted">Indexed repository</p>
-              <h2 className="mt-2 text-xl font-semibold">{meta?.repo ?? "Waiting for repository"}</h2>
-            </div>
-            <span className={`mt-1 h-3 w-3 rounded-full ${graphReady ? "bg-[#2f9e68] shadow-[0_0_0_5px_rgb(47_158_104_/_0.10)]" : "bg-accent"}`} />
-          </div>
-          <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-line bg-line">
-            <CaseMetric label="Files searchable" value={fmt(meta?.files ?? 0)} />
-            <CaseMetric label="Saved runs" value={fmt(meta?.runs ?? 0)} />
-            <CaseMetric label="Graph engine" value="HydraDB" accent />
-            <CaseMetric label="Agent tools" value={String(meta?.mcpTools?.length ?? 0)} />
-          </dl>
-          <p className="mt-4 break-all font-mono text-[10px] leading-5 text-muted">{meta?.root ?? "Start the API to load repository metadata."}</p>
-        </div>
+        <h1 className="mt-4 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">What are you changing?</h1>
+        <p className="mt-3 max-w-2xl text-base leading-7 text-muted">Describe the change. Lumos searches all {fmt(meta?.files ?? 0)} files, follows the graph, and returns a small evidence-backed plan.</p>
+        <button type="button" disabled={!graphReady} onClick={onNew} className={`mt-7 flex min-h-14 w-full max-w-2xl items-center justify-between rounded-xl border border-[#b9c9d2] bg-panel px-4 text-left shadow-[0_8px_22px_rgb(18_40_54_/_0.05)] hover:border-lexical ${focusRing}`}>
+          <span className="flex items-center gap-3 text-sm text-muted"><MagnifyingGlass size={18} /> Describe a bug, feature, or stack trace</span>
+          <span className="rounded-md bg-foreground px-3 py-1.5 text-xs font-semibold text-panel">Start</span>
+        </button>
       </section>
 
-      <section className="mt-7" aria-labelledby="product-loop-title">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">The complete loop</p>
-            <h2 id="product-loop-title" className="mt-2 text-3xl font-semibold tracking-[-0.035em]">From request to verified patch.</h2>
+      <div className="mt-12 grid gap-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(17rem,0.65fr)]">
+        <section>
+          <div className="flex items-center justify-between border-b border-line pb-3">
+            <h2 className="text-sm font-semibold">Recent preflights</h2>
+            <Link href="/app/runs" className={`text-xs font-medium text-muted hover:text-foreground ${focusRing}`}>View all</Link>
           </div>
-          <button type="button" onClick={onConnect} className={`${buttonBase} border border-line bg-panel text-foreground hover:border-lexical/60 ${focusRing}`}>Connect your agent <span className="ml-2" aria-hidden="true">→</span></button>
-        </div>
-        <ol className="mt-5 grid overflow-hidden rounded-[1.6rem] border border-line bg-panel md:grid-cols-4">
-          <LoopStep number="01" title="Preflight" detail={`Search all ${fmt(meta?.files ?? 0)} files before editing.`} />
-          <LoopStep number="02" title="Prove" detail="Walk calls, coverage, and co-change relationships." />
-          <LoopStep number="03" title="Handoff" detail="Send a compact context contract through MCP." />
-          <LoopStep number="04" title="Patch Guard" detail="Check the files and tests the agent actually touched." last />
-        </ol>
-      </section>
-
-      <div className="mt-7 grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
-        <section className="rounded-[1.6rem] border border-[#b4d8ea] bg-[#eef9ff] p-6 sm:p-7">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Why the graph matters</p>
-              <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em]">When matching names point at the wrong file.</h2>
-            </div>
-            <span className="rounded-full border border-[#9bcde5] bg-panel px-3 py-1.5 font-mono text-[10px] text-lexical">django-16873</span>
-          </div>
-          <p className="mt-4 max-w-3xl text-sm leading-6 text-muted">Word search ranked the actual patch file third. A HydraDB coverage path connected the named filter to its protecting test, so Lumos promoted the file to first and exposed the reason.</p>
-          <div className="mt-6 grid grid-cols-3 gap-px overflow-hidden rounded-2xl border border-[#b6d9ea] bg-[#b6d9ea]">
-            <CaseMetric label="Word search" value="#3" />
-            <CaseMetric label="Lumos" value="#1" accent />
-            <CaseMetric label="Connected tests" value="20" />
-          </div>
-          {summary ? <p className="mt-4 text-xs leading-5 text-muted">Across the frozen {summary.n}-case evaluation, Lumos does not claim a blanket ranking win. It keeps word search as the safe default and reorders only when graph evidence is corroborated.</p> : null}
-        </section>
-
-        <section className="rounded-[1.6rem] border border-line bg-panel p-6 sm:p-7">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Recent activity</p>
-              <h2 className="mt-2 text-xl font-semibold">Agent and workspace calls</h2>
-            </div>
-            <span className="font-mono text-[10px] text-muted">live</span>
-          </div>
-          {events.length ? (
-            <ul className="mt-5 divide-y divide-line border-y border-line">
-              {events.slice(0, 4).map((event) => (
-                <li key={event.id} className="grid grid-cols-[0.65rem_minmax(0,1fr)_auto] gap-3 py-3.5">
-                  <span className={`mt-1.5 h-2 w-2 rounded-full ${event.state === "complete" ? "bg-[#2f9e68]" : "bg-accent"}`} />
-                  <span className="min-w-0">
-                    <span className="block truncate font-mono text-[11px] font-semibold">{event.tool}</span>
-                    <span className="mt-1 block truncate text-xs text-muted">{event.summary}</span>
-                  </span>
-                  <time className="font-mono text-[9px] text-muted" dateTime={event.at}>{timeAgo(event.at)}</time>
+          {runs.length ? (
+            <ul className="divide-y divide-line">
+              {runs.slice(0, 5).map((run) => (
+                <li key={run.id}>
+                  <button type="button" onClick={() => onOpenRun(run.id)} className={`group grid w-full grid-cols-[1.8rem_minmax(0,1fr)_auto] items-start gap-3 py-4 text-left ${focusRing}`}>
+                    <span className="mt-0.5 grid h-7 w-7 place-items-center rounded-md bg-inset text-muted"><Files size={15} /></span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium group-hover:text-lexical">{compactRequest(run.request)}</span>
+                      <span className="mt-1 block text-xs text-muted">{run.quality.filesSelected} files, {run.quality.testsFound} tests</span>
+                    </span>
+                    <time className="pt-1 text-xs text-muted" dateTime={run.completedAt}>{timeAgo(run.completedAt)}</time>
+                  </button>
                 </li>
               ))}
             </ul>
-          ) : <p className="mt-5 rounded-2xl border border-dashed border-line p-5 text-sm leading-6 text-muted">No calls yet. Run a preflight here or connect an IDE agent; activity will appear in this ledger.</p>}
-          {latestRun ? <button type="button" onClick={() => onOpenRun(latestRun.id)} className={`${buttonBase} mt-5 w-full border border-line bg-panel text-foreground hover:border-lexical/60 ${focusRing}`}>Open latest run · {timeAgo(latestRun.completedAt)}</button> : null}
+          ) : (
+            <div className="py-10 text-center">
+              <p className="text-sm font-medium">No preflights yet</p>
+              <p className="mt-1 text-sm text-muted">Your evidence-backed changes will appear here.</p>
+            </div>
+          )}
         </section>
+
+        <aside className="border-l border-line pl-0 lg:pl-7">
+          <h2 className="text-sm font-semibold">Repository</h2>
+          <dl className="mt-4 space-y-4 text-sm">
+            <Row label="Source" value="Django demo" />
+            <Row label="Indexed files" value={fmt(meta?.files ?? 0)} />
+            <Row label="Graph" value={graphReady ? "Ready" : "Offline"} />
+            <Row label="Engine" value="HydraDB" />
+          </dl>
+          <Link href="/app/graph" className={`mt-6 inline-flex items-center gap-2 text-sm font-medium text-lexical hover:text-foreground ${focusRing}`}>Open graph explorer <ArrowRight size={15} /></Link>
+        </aside>
       </div>
     </div>
-  );
-}
-
-function LoopStep({ number, title, detail, last = false }: { number: string; title: string; detail: string; last?: boolean }) {
-  return (
-    <li className={`relative min-h-48 p-6 ${last ? "" : "border-b border-line md:border-b-0 md:border-r"}`}>
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-xs font-semibold text-lexical">{number}</span>
-        {!last ? <span className="hidden font-mono text-xs text-[#8dbbd4] md:inline" aria-hidden="true">····→</span> : null}
-      </div>
-      <h3 className="mt-9 text-xl font-semibold">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-muted">{detail}</p>
-    </li>
   );
 }
 
@@ -1056,10 +1178,9 @@ function LiveRunView({
       <div className="flex flex-wrap items-end justify-between gap-5">
         <div>
           <div className="flex flex-wrap items-center gap-3">
-            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">Live preflight</p>
             <span className={`rounded-full border px-3 py-1 font-mono text-[10px] ${ready ? "border-[#a9d6bc] bg-[#f1fbf5] text-[#287a52]" : "border-[#efc0a6] bg-[#fff8f3] text-accent"}`}>{ready ? "ready for agent" : "needs review"}</span>
           </div>
-          <h1 className="mt-3 max-w-4xl text-4xl font-semibold tracking-[-0.04em]">{ready ? "The repository has answered." : "The graph needs a clearer request."}</h1>
+          <h1 className="mt-3 max-w-4xl text-3xl font-semibold tracking-[-0.035em]">{ready ? "Preflight ready" : "Request needs more detail"}</h1>
           <p className="mt-3 max-w-3xl text-base leading-7 text-muted">{request}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1068,7 +1189,7 @@ function LiveRunView({
         </div>
       </div>
 
-      <dl className="mt-7 grid overflow-hidden rounded-[1.5rem] border border-line bg-panel sm:grid-cols-4">
+      <dl className="mt-7 grid overflow-hidden rounded-xl border border-line bg-panel sm:grid-cols-4">
         <ProofMetric label="Repository searched" value={fmt(retrieve.quality.filesChecked)} detail="indexed files" />
         <ProofMetric label="Context selected" value={String(retrieve.quality.filesSelected)} detail="files for the agent" />
         <ProofMetric label="Graph paths" value={fmt(retrieve.traversal.pathCount)} detail={retrieve.traversal.engine} tone="accent" />
@@ -1076,7 +1197,7 @@ function LiveRunView({
       </dl>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(25rem,0.9fr)_minmax(30rem,1.1fr)]">
-        <section className="rounded-[1.6rem] border border-line bg-panel p-5 sm:p-6">
+        <section className="rounded-xl border border-line bg-panel p-5 sm:p-6">
           <div className="flex items-center justify-between gap-4 border-b border-line pb-4">
             <div>
               <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Execution trace</p>
@@ -1098,7 +1219,7 @@ function LiveRunView({
           </ol>
         </section>
 
-        <section className="rounded-[1.6rem] border border-[#abd4e8] bg-[#eef9ff] p-5 shadow-[0_22px_60px_rgb(24_84_120_/_0.08)] sm:p-7">
+        <section className="rounded-xl border border-[#abd4e8] bg-[#eef9ff] p-5 sm:p-7">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Context contract</p>
@@ -1141,7 +1262,7 @@ function LiveRunView({
         </section>
       </div>
 
-      <section className="mt-6 rounded-[1.4rem] border border-line bg-panel p-5">
+      <section className="mt-6 rounded-xl border border-line bg-panel p-5">
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Agent exchange</p>
@@ -1200,13 +1321,12 @@ function PatchGuardView({ retrieve, onRequest, onVerified }: { retrieve: Retriev
   return (
     <div className="mx-auto w-full max-w-[1320px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
       <div className="max-w-4xl">
-        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">Post-edit verification</p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-[-0.04em]">Did the agent change what the graph proved?</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.035em]">Verify the agent&apos;s patch</h1>
         <p className="mt-3 text-base leading-7 text-muted">Paste repository-relative paths from the patch and the tests the agent ran. Lumos compares them with preflight <code className="font-mono text-xs text-foreground">{retrieve.runId}</code>.</p>
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(24rem,0.85fr)_minmax(30rem,1.15fr)]">
-        <form onSubmit={(event) => void verify(event)} className="rounded-[1.6rem] border border-line bg-panel p-5 sm:p-6">
+        <form onSubmit={(event) => void verify(event)} className="rounded-xl border border-line bg-panel p-5 sm:p-6">
           <div className="flex items-center justify-between gap-4 border-b border-line pb-4">
             <div>
               <h2 className="text-xl font-semibold">Patch manifest</h2>
@@ -1224,7 +1344,7 @@ function PatchGuardView({ retrieve, onRequest, onVerified }: { retrieve: Retriev
           <p className="mt-3 text-center text-xs text-muted">MCP agents can call <code className="font-mono text-[10px]">lumos.verify_patch</code> automatically.</p>
         </form>
 
-        <section className="rounded-[1.6rem] border border-[#b4d8ea] bg-[#eef9ff] p-5 sm:p-7" aria-live="polite">
+        <section className="rounded-xl border border-[#b4d8ea] bg-[#eef9ff] p-5 sm:p-7" aria-live="polite">
           {verification ? (
             <>
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1252,7 +1372,7 @@ function PatchGuardView({ retrieve, onRequest, onVerified }: { retrieve: Retriev
               <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em]">Four checks, one clear verdict.</h2>
               <p className="mt-3 max-w-xl text-sm leading-6 text-muted">Patch Guard checks the primary target, unexpected scope, connected tests, and whether the preflight itself carried graph evidence.</p>
               <dl className="mt-7 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-[#b6d9ea] bg-[#b6d9ea]">
-                <CaseMetric label="Expected target" value={shortPath(retrieve.ranked[0]?.path ?? "—")} />
+                <CaseMetric label="Expected target" value={shortPath(retrieve.ranked[0]?.path ?? "None")} />
                 <CaseMetric label="Connected tests" value={String(retrieve.tests.length)} />
               </dl>
             </div>
@@ -1263,26 +1383,41 @@ function PatchGuardView({ retrieve, onRequest, onVerified }: { retrieve: Retriev
   );
 }
 
-function RunsView({ runs, loading, currentRunId, onOpen, onRefresh, onNew }: { runs: RunSummary[]; loading: boolean; currentRunId: string | null; onOpen: (id: string) => void; onRefresh: () => void; onNew: () => void }) {
+function RunsView({ runs, loading, currentRunId, onRefresh, onNew }: { runs: RunSummary[]; loading: boolean; currentRunId: string | null; onRefresh: () => void; onNew: () => void }) {
+  const [query, setQuery] = useState("");
+  const filteredRuns = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return runs;
+    return runs.filter((run) => `${run.id} ${run.request} ${run.repo}`.toLowerCase().includes(needle));
+  }, [query, runs]);
   if (loading) return <ResultSkeleton />;
   return (
     <div className="mx-auto w-full max-w-[1180px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
       <div className="flex flex-wrap items-end justify-between gap-5">
         <div>
-          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">Run history</p>
-          <h1 className="mt-3 text-4xl font-semibold tracking-[-0.04em]">Every preflight is reusable evidence.</h1>
-          <p className="mt-3 max-w-3xl text-base leading-7 text-muted">Reopen a previous request with its exact ranking, graph traversal, tests, and context contract.</p>
+          <h1 className="text-3xl font-semibold tracking-[-0.035em]">Preflights</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">Reopen a request with its original ranking, graph path, tests, and agent handoff.</p>
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={onRefresh} className={`${buttonBase} border border-line bg-panel text-foreground hover:border-lexical/60 ${focusRing}`}>Refresh</button>
-          <button type="button" onClick={onNew} className={`${buttonBase} bg-accent text-white hover:bg-[#a94d23] ${focusRing}`}>New preflight</button>
+          <button type="button" onClick={onRefresh} className={`${buttonBase} border border-line bg-panel text-foreground hover:border-lexical ${focusRing}`}>Refresh</button>
+          <button type="button" onClick={onNew} className={`${buttonBase} gap-2 bg-foreground text-panel hover:bg-[#2a3540] ${focusRing}`}><Plus size={15} /> New preflight</button>
         </div>
       </div>
       {runs.length ? (
-        <ol className="mt-8 overflow-hidden rounded-[1.6rem] border border-line bg-panel">
-          {runs.map((run, index) => (
-            <li key={run.id} className={index === runs.length - 1 ? "" : "border-b border-line"}>
-              <button type="button" onClick={() => onOpen(run.id)} className={`grid min-h-[7.5rem] w-full gap-4 px-5 py-4 text-left transition-colors duration-100 hover:bg-inset sm:grid-cols-[8rem_minmax(0,1fr)_minmax(14rem,0.55fr)_auto] sm:items-center ${focusRing}`}>
+        <div className="mt-8">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
+            <label className="relative block w-full max-w-md" htmlFor="run-search">
+              <span className="sr-only">Search saved runs</span>
+              <MagnifyingGlass size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
+              <input id="run-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search requests, repositories, or run IDs" className={`min-h-10 w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-4 text-sm placeholder:text-muted/70 hover:border-[#9cc5dc] ${focusRing}`} />
+            </label>
+            <p className="font-mono text-[10px] text-muted">{filteredRuns.length} of {runs.length} runs</p>
+          </div>
+          {filteredRuns.length ? (
+        <ol className="mt-6 overflow-hidden rounded-xl border border-line bg-panel">
+          {filteredRuns.map((run, index) => (
+            <li key={run.id} className={index === filteredRuns.length - 1 ? "" : "border-b border-line"}>
+              <Link href={workspaceHref("live", run.id)} className={`grid min-h-24 w-full gap-4 px-5 py-4 text-left transition-colors duration-100 hover:bg-inset sm:grid-cols-[7rem_minmax(0,1fr)_minmax(14rem,0.55fr)_auto] sm:items-center ${focusRing}`}>
                 <span>
                   <span className="block font-mono text-[10px] text-muted">{new Date(run.completedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
                   <span className="mt-1 block font-mono text-[10px] text-muted">{new Date(run.completedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>
@@ -1297,11 +1432,19 @@ function RunsView({ runs, loading, currentRunId, onOpen, onRefresh, onNew }: { r
                   <SmallStat label="Selected" value={String(run.quality.filesSelected)} />
                   <SmallStat label="Tests" value={String(run.quality.testsFound)} />
                 </span>
-                <span className="font-mono text-xs text-lexical" aria-hidden="true">→</span>
-              </button>
+                <ArrowRight size={15} className="text-lexical" aria-hidden="true" />
+              </Link>
             </li>
           ))}
         </ol>
+          ) : (
+            <div className="mt-8 rounded-[1.6rem] border border-dashed border-line bg-panel p-10 text-center">
+              <h2 className="text-xl font-semibold">No runs match “{query}”.</h2>
+              <p className="mt-2 text-sm text-muted">Try a filename, repository name, or a shorter phrase.</p>
+              <button type="button" onClick={() => setQuery("")} className={`${buttonBase} mt-5 border border-line bg-panel text-foreground hover:border-lexical/60 ${focusRing}`}>Clear search</button>
+            </div>
+          )}
+        </div>
       ) : (
         <div className="mt-8 rounded-[1.6rem] border border-dashed border-line bg-panel p-10 text-center">
           <h2 className="text-2xl font-semibold">No saved runs yet.</h2>
@@ -1327,13 +1470,12 @@ function ConnectAgentView({ meta, events, copied, onCopy }: { meta: Meta | null;
   return (
     <div className="mx-auto w-full max-w-[1240px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
       <div className="max-w-4xl">
-        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">IDE connection</p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-[-0.04em]">Put Lumos before and after every agent edit.</h1>
-        <p className="mt-3 text-base leading-7 text-muted">Connect the local MCP server once. Your coding agent can preflight a request, inspect graph proof, and verify its patch without leaving the IDE.</p>
+        <h1 className="text-3xl font-semibold tracking-[-0.035em]">Connect your coding agent</h1>
+        <p className="mt-2 text-sm leading-6 text-muted">Add the local MCP server once. Your agent can preflight a request, inspect proof, and verify its patch from the IDE.</p>
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(30rem,1.1fr)_minmax(22rem,0.9fr)]">
-        <section className="rounded-[1.6rem] border border-line bg-panel p-5 sm:p-7">
+        <section className="rounded-xl border border-line bg-panel p-5 sm:p-7">
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-4">
             <div>
               <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">MCP configuration</p>
@@ -1349,7 +1491,7 @@ function ConnectAgentView({ meta, events, copied, onCopy }: { meta: Meta | null;
           <div className="mt-6 overflow-hidden rounded-2xl border border-[#b8dbea] bg-[#eaf6fd]">
             <div className="flex items-center justify-between border-b border-[#b8dbea] px-4 py-3">
               <span className="font-mono text-[10px] text-[#315a75]">mcp.json</span>
-              <button type="button" onClick={() => void onCopy(config, "config")} className={`min-h-10 rounded-full border border-[#9ccbe5] bg-panel px-3 text-xs font-semibold text-foreground hover:border-lexical ${focusRing}`}>{copied === "config" ? "Configuration copied" : "Copy configuration"}</button>
+              <button type="button" onClick={() => void onCopy(config, "config")} className={`min-h-9 rounded-lg border border-[#9ccbe5] bg-panel px-3 text-xs font-semibold text-foreground hover:border-lexical ${focusRing}`}>{copied === "config" ? "Configuration copied" : "Copy configuration"}</button>
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-[11px] leading-6 text-[#173a55]"><code>{config}</code></pre>
           </div>
@@ -1363,7 +1505,7 @@ LUMOS_REPO=owner/name LUMOS_ROOT=/path/to/repo pnpm api`}</code></pre>
         </section>
 
         <div className="space-y-6">
-          <section className="rounded-[1.6rem] border border-[#b4d8ea] bg-[#eef9ff] p-5 sm:p-6">
+          <section className="rounded-xl border border-[#b4d8ea] bg-[#eef9ff] p-5 sm:p-6">
             <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Available tools</p>
             <ul className="mt-4 divide-y divide-[#c7deeb] border-y border-[#c7deeb]">
               {(meta?.mcpTools ?? ["lumos.preflight_change", "lumos.verify_patch", "lumos.explain_file_rank", "lumos.impact", "lumos.tests_for_change"]).map((tool, index) => (
@@ -1374,7 +1516,7 @@ LUMOS_REPO=owner/name LUMOS_ROOT=/path/to/repo pnpm api`}</code></pre>
               ))}
             </ul>
           </section>
-          <section className="rounded-[1.6rem] border border-line bg-panel p-5 sm:p-6">
+          <section className="rounded-xl border border-line bg-panel p-5 sm:p-6">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">MCP activity</h2>
               <span className="font-mono text-[9px] text-muted">{mcpEvents.length} calls</span>
@@ -1383,6 +1525,139 @@ LUMOS_REPO=owner/name LUMOS_ROOT=/path/to/repo pnpm api`}</code></pre>
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+function RepositoryView({
+  connected,
+  meta,
+  graphReady,
+  onDemo,
+  copied,
+  onCopy,
+}: {
+  connected: boolean;
+  meta: Meta | null;
+  graphReady: boolean;
+  onDemo: () => void;
+  copied: CopyTarget;
+  onCopy: (value: string, target: Exclude<CopyTarget, null>) => Promise<void>;
+}) {
+  const setup = `pnpm lumos index /absolute/path/to/repo --slug owner/name
+LUMOS_REPO=owner/name LUMOS_ROOT=/absolute/path/to/repo pnpm api`;
+
+  return (
+    <div className="onboarding-surface mx-auto min-h-full w-full max-w-[1040px] px-5 py-10 sm:px-10 lg:py-14">
+      <div className="max-w-2xl">
+        <h1 className="text-3xl font-semibold tracking-[-0.035em]">{connected ? "Repositories" : "Choose a repository"}</h1>
+        <p className="mt-3 text-base leading-7 text-muted">{connected ? "Django is the active workspace. Index another local Python codebase when you are ready to switch." : "Start with the included Django snapshot or index a local Python codebase."}</p>
+      </div>
+
+      <section className="mt-9 overflow-hidden rounded-xl border border-[#bdd7e6] bg-panel shadow-[0_18px_48px_rgb(31_99_139_/_0.06)]">
+        <div className="grid gap-5 border-b border-[#d2e3ec] p-5 sm:grid-cols-[2.75rem_minmax(0,1fr)_auto] sm:items-center">
+          <span className="grid h-11 w-11 place-items-center text-[#1f6e9b]"><Bug size={23} /></span>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold">Django demo</h2>
+              <span className="rounded-md bg-[#e6f4fb] px-2 py-1 text-[10px] font-medium text-[#24698f]">{connected ? "Active" : "Included"}</span>
+            </div>
+            <p className="mt-1 text-sm text-muted">{fmt(meta?.files ?? 0)} files indexed, {fmt(meta?.runs ?? 0)} saved runs, HydraDB {graphReady ? "ready" : "offline"}</p>
+          </div>
+          <button type="button" disabled={!graphReady} onClick={onDemo} className={`${buttonBase} gap-2 bg-[#123b55] text-white hover:bg-[#0d3047] ${focusRing}`}>{connected ? "Open workspace" : "Use demo"} <ArrowRight size={15} /></button>
+        </div>
+
+        <div className="p-5 sm:p-6">
+          <div className="flex items-start gap-4">
+            <span className="grid h-11 w-11 shrink-0 place-items-center text-[#1f6e9b]"><TerminalWindow size={23} /></span>
+            <div>
+              <h2 className="text-sm font-semibold">Index a local repository</h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">Run these commands from Lumos. The web workspace will use that repository when the API restarts.</p>
+            </div>
+          </div>
+          <div className="mt-5 overflow-hidden rounded-lg border border-[#c8dce7] bg-[#eef6fb]">
+            <div className="flex items-center justify-between border-b border-[#c8dce7] px-4 py-2.5">
+              <span className="font-mono text-[10px] text-muted">Terminal</span>
+              <button type="button" onClick={() => void onCopy(setup, "config")} className={`text-xs font-semibold text-muted hover:text-foreground ${focusRing}`}>{copied === "config" ? "Copied" : "Copy"}</button>
+            </div>
+            <pre className="overflow-x-auto p-4 font-mono text-[11px] leading-6 text-foreground"><code>{setup}</code></pre>
+          </div>
+          <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-muted"><ShieldCheck size={15} className="mt-0.5 shrink-0" /> Local source only. Lumos does not upload repository contents or require an AI API key.</p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function GraphExplorerView({
+  impact,
+  graphNodes,
+  graphLinks,
+  selectedNode,
+  graphReady,
+  busy,
+  onWalk,
+  onSelect,
+}: {
+  impact: ImpactResult | null;
+  graphNodes: GraphNode[];
+  graphLinks: GraphLink[];
+  selectedNode: string | null;
+  graphReady: boolean;
+  busy: boolean;
+  onWalk: (symbol: string) => void;
+  onSelect: (node: string) => void;
+}) {
+  const [symbol, setSymbol] = useState("django.template.defaultfilters.join");
+  const suggestions = [
+    "django.template.defaultfilters.join",
+    "django.urls.resolvers.URLResolver.resolve",
+    "django.forms.fields.URLField.to_python",
+  ];
+
+  return (
+    <div className="flex min-h-full flex-col">
+      <div className="border-b border-line bg-panel px-5 py-5 sm:px-7">
+        <div className="mx-auto w-full max-w-[1280px]">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-[-0.025em]">Graph explorer</h1>
+              <p className="mt-1 text-sm text-muted">Follow calls, coverage, and co-change paths from one Python symbol.</p>
+            </div>
+            <form className="flex w-full max-w-2xl gap-2" onSubmit={(event) => { event.preventDefault(); onWalk(symbol.trim()); }}>
+              <label className="sr-only" htmlFor="graph-symbol">Python symbol</label>
+              <div className="relative min-w-0 flex-1">
+                <MagnifyingGlass size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input id="graph-symbol" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="package.module.symbol" className={`h-10 w-full rounded-lg border border-line bg-background pl-9 pr-3 font-mono text-xs text-foreground placeholder:text-muted hover:border-[#aebfc9] ${focusRing}`} />
+              </div>
+              <button type="submit" disabled={!graphReady || busy || !symbol.trim()} className={`${buttonBase} bg-foreground text-panel hover:bg-[#2a3540] ${focusRing}`}>{busy ? "Walking" : "Trace"}</button>
+            </form>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {suggestions.map((item) => <button key={item} type="button" onClick={() => { setSymbol(item); onWalk(item); }} className={`rounded-md border border-line bg-background px-2.5 py-1.5 font-mono text-[10px] text-muted hover:border-lexical hover:text-foreground ${focusRing}`}>{item.split(".").at(-1)}</button>)}
+          </div>
+        </div>
+      </div>
+
+      {impact ? (
+        <section className="flex min-h-[36rem] flex-1 flex-col" aria-label="Repository graph">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-background px-5 py-3 sm:px-7">
+            <p className="truncate font-mono text-xs font-semibold">{impact.seed.qualname}</p>
+            <p className="font-mono text-[10px] text-muted">{impact.symbols.length} symbols · {impact.tests.length} tests · {impact.pathCount} paths · {impact.elapsedMs} ms</p>
+          </div>
+          <div className="min-h-[32rem] flex-1">
+            <BlastGraph seed={impact.seed.qualname} nodes={graphNodes} links={graphLinks} selected={selectedNode} onSelect={onSelect} />
+          </div>
+        </section>
+      ) : (
+        <div className="grid flex-1 place-items-center px-6 py-16">
+          <div className="max-w-md text-center">
+            <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl border border-line bg-panel text-lexical"><Graph size={23} /></span>
+            <h2 className="mt-5 text-lg font-semibold">Trace a symbol through the repository</h2>
+            <p className="mt-2 text-sm leading-6 text-muted">Lumos will draw the actual HydraDB relationships and show the tests reached by the walk.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1413,19 +1688,18 @@ function RequestView({
   onProof: () => void;
 }) {
   const examples = [
-    { label: "Fix a bug", value: SAMPLE_ISSUE },
-    { label: "Add a feature", value: "Add rate limiting to the payment endpoint and update its tests." },
-    { label: "Follow an error", value: "A ValueError escapes from URL validation instead of returning ValidationError." },
+    { label: "Template bug", value: SAMPLE_ISSUE },
+    { label: "Rate limiting", value: "Add rate limiting to the payment endpoint and update its tests." },
+    { label: "Validation error", value: "A ValueError escapes from URL validation instead of returning ValidationError." },
   ];
 
   return (
-    <div className="mx-auto grid min-h-full w-full max-w-[1280px] gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(19rem,0.6fr)] lg:px-10 lg:py-12 xl:gap-14">
+    <div className="mx-auto min-h-full w-full max-w-[860px] px-5 py-10 sm:px-8 lg:py-14">
       <section>
-        <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-lexical">01 / Ask Lumos</p>
-        <h1 className="mt-4 max-w-3xl text-4xl font-semibold leading-[1.04] tracking-[-0.04em] sm:text-5xl">Know where to edit before AI starts coding.</h1>
-        <p className="mt-5 max-w-2xl text-base leading-7 text-muted">Describe one code change. Lumos checks all {fmt(meta?.files ?? 0)} indexed files, follows the repository graph, and returns only the files and tests that matter.</p>
+        <h1 className="text-3xl font-semibold tracking-[-0.035em]">What should the agent change?</h1>
+        <p className="mt-3 max-w-2xl text-base leading-7 text-muted">Lumos checks all {fmt(meta?.files ?? 0)} indexed files and returns the smallest plan it can prove.</p>
 
-        <div className="mt-7 flex flex-wrap gap-2" aria-label="Example requests">
+        <div className="mt-6 flex flex-wrap gap-2" aria-label="Example requests">
           {examples.map((example) => (
             <button
               key={example.label}
@@ -1434,7 +1708,7 @@ function RequestView({
                 setIssue(example.value);
                 window.setTimeout(() => issueRef.current?.focus(), 0);
               }}
-              className={`min-h-10 rounded-full border border-line bg-panel px-3.5 text-xs font-semibold text-muted hover:border-lexical/60 hover:text-foreground ${focusRing}`}
+              className={`min-h-8 rounded-md border border-line bg-panel px-3 text-xs font-medium text-muted hover:border-lexical hover:text-foreground ${focusRing}`}
             >
               {example.label}
             </button>
@@ -1442,13 +1716,13 @@ function RequestView({
         </div>
 
         <form
-          className="mt-5 rounded-[1.6rem] border border-[#badbeb] bg-panel p-3 shadow-[0_22px_65px_rgb(36_112_158_/_0.10)] sm:p-4"
+          className="mt-4 rounded-xl border border-[#b9cbd5] bg-panel p-3 shadow-[0_10px_30px_rgb(18_40_54_/_0.06)] sm:p-4"
           onSubmit={(event) => {
             event.preventDefault();
             onRun(issue);
           }}
         >
-          <label htmlFor="agent-request" className="mb-2 block px-1 text-sm font-semibold">What should change?</label>
+          <label htmlFor="agent-request" className="sr-only">Change request</label>
           <textarea
             ref={issueRef}
             id="agent-request"
@@ -1460,70 +1734,38 @@ function RequestView({
                 onRun(issue);
               }
             }}
-            rows={5}
+            rows={7}
             aria-invalid={requestError ? true : undefined}
             aria-describedby={requestError ? "request-error" : "request-help"}
             placeholder="Example: The join template filter escapes its separator when autoescape is off."
-            className={`min-h-44 w-full resize-y rounded-[1.15rem] border bg-inset px-4 py-4 text-sm leading-7 text-foreground placeholder:text-muted/70 hover:border-[#9cc5dc] ${requestError ? "border-accent" : "border-line"} ${focusRing}`}
+            className={`min-h-52 w-full resize-y rounded-lg border bg-background px-4 py-4 text-sm leading-7 text-foreground placeholder:text-muted/70 hover:border-[#9cc5dc] ${requestError ? "border-accent" : "border-line"} ${focusRing}`}
           />
           {requestError ? <p id="request-error" role="alert" className="px-1 pt-2 text-sm leading-6 text-accent">{requestError}</p> : <p id="request-help" className="px-1 pt-2 text-xs leading-5 text-muted">A useful request names the behavior, error, feature, function, or stack trace involved.</p>}
           <div className="flex flex-col gap-3 px-1 pb-1 pt-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-xs text-muted"><kbd className="rounded border border-line bg-inset px-1.5 py-1 font-mono text-[10px]">⌘ Enter</kbd> to run</p>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <button type="button" disabled={busy || !graphReady} onClick={onDemo} className={`${buttonBase} border border-line bg-panel text-foreground hover:border-lexical/60 ${focusRing}`}>
-                Show me with a real bug
+              <button type="button" disabled={busy || !graphReady} onClick={onDemo} className={`${buttonBase} border border-line bg-panel text-foreground hover:border-lexical ${focusRing}`}>
+                Run included bug
               </button>
-              <button type="submit" disabled={busy || !issue.trim() || !graphReady} className={`${buttonBase} min-w-40 bg-accent text-white hover:bg-[#a94d23] ${focusRing}`}>
-                {busy ? "Checking repository…" : "Find the right files"}
+              <button type="submit" disabled={busy || !issue.trim() || !graphReady} className={`${buttonBase} min-w-40 gap-2 bg-foreground text-panel hover:bg-[#2a3540] ${focusRing}`}>
+                {busy ? "Checking repository..." : <>Build preflight <ArrowRight size={15} /></>}
               </button>
             </div>
           </div>
         </form>
 
         {retrieve ? (
-          <button type="button" onClick={onProof} className={`mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-lexical hover:text-foreground ${focusRing}`}>
-            Return to the latest edit plan <span aria-hidden="true">→</span>
+          <button type="button" onClick={onProof} className={`mt-4 inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-lexical hover:text-foreground ${focusRing}`}>
+            Return to the latest plan <ArrowRight size={15} />
           </button>
         ) : null}
+        <div className="mt-8 flex flex-wrap gap-x-6 gap-y-2 border-t border-line pt-5 text-xs text-muted">
+          <span>{fmt(meta?.files ?? 0)} files searched</span>
+          <span>HydraDB {graphReady ? "ready" : "offline"}</span>
+          <span>No AI API key</span>
+        </div>
       </section>
-
-      <aside className="lg:pt-16">
-        <div className="relative overflow-hidden rounded-[1.6rem] border border-line bg-panel p-6">
-          <div className="absolute -right-14 -top-14 h-40 w-40 rounded-full bg-[#d7f0fc] blur-2xl" aria-hidden="true" />
-          <p className="relative font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-lexical">What you get</p>
-          <ol className="relative mt-6 space-y-0">
-            <RequestStep number="01" title="Where to edit" detail="A short list ordered for this exact change." active />
-            <RequestStep number="02" title="Why each file belongs" detail="The repository relationships behind every recommendation." />
-            <RequestStep number="03" title="Which tests protect it" detail="Tests connected to the code the agent may touch." />
-            <RequestStep number="04" title="A ready agent brief" detail="A focused plan you can copy into Cursor, Codex, or Claude Code." last />
-          </ol>
-          <div className="relative mt-1 rounded-2xl border border-[#b6d9ea] bg-[#f2faff] p-4">
-            <p className="text-sm font-semibold">{fmt(meta?.files ?? 0)} files checked → up to 12 strongest candidates</p>
-            <p className="mt-1 text-xs leading-5 text-muted">The number returned is the shortlist, not the number searched.</p>
-          </div>
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <InfoTile label="Repository" value={repoLabel(meta?.repo)} />
-          <InfoTile label="HydraDB" value={graphReady ? "Connected" : "Offline"} accent={graphReady} />
-        </div>
-        <p className="mt-5 border-l-2 border-lexical pl-4 text-sm leading-6 text-muted"><strong className="text-foreground">No AI API key required.</strong> Lumos builds context for the coding agent you already use; it does not call a language model here.</p>
-      </aside>
     </div>
-  );
-}
-
-function RequestStep({ number, title, detail, active = false, last = false }: { number: string; title: string; detail: string; active?: boolean; last?: boolean }) {
-  return (
-    <li className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-3">
-      <div className="flex flex-col items-center">
-        <span className={`grid h-8 w-8 place-items-center rounded-full border font-mono text-[10px] ${active ? "border-accent bg-[#fff4ec] text-accent" : "border-[#a9d2e8] bg-[#f4fbff] text-lexical"}`}>{number}</span>
-        {!last ? <span className="min-h-12 w-px flex-1 bg-line" /> : null}
-      </div>
-      <div className="pb-6">
-        <p className="text-sm font-semibold">{title}</p>
-        <p className="mt-1 text-sm leading-6 text-muted">{detail}</p>
-      </div>
-    </li>
   );
 }
 
@@ -1609,7 +1851,7 @@ function ProofView({
           <dl className="grid grid-cols-2 overflow-hidden rounded-2xl border border-line bg-inset sm:grid-cols-4">
             <ProofMetric label="Checked" value={fmt(quality.filesChecked)} detail="whole repository" />
             <ProofMetric label="Selected" value={String(quality.filesSelected)} detail="strongest matches" />
-            <ProofMetric label={hasVerifiedPlan ? "Start here" : "Verified start"} value={hasVerifiedPlan ? "#1" : "—"} detail={hasVerifiedPlan ? shortPath(topFile?.path ?? "—") : "refine request"} tone="accent" />
+            <ProofMetric label={hasVerifiedPlan ? "Start here" : "Verified start"} value={hasVerifiedPlan ? "#1" : "None"} detail={hasVerifiedPlan ? shortPath(topFile?.path ?? "None") : "refine request"} tone="accent" />
             <ProofMetric label="Tests" value={String(quality.testsFound)} detail="connected" />
           </dl>
         </div>
@@ -1755,7 +1997,7 @@ function FileInspector({ file, tests, traversal, totalMs, withoutGraph, copied, 
           <Row label="walk" value={`${traversal.elapsedMs} ms`} />
           <Row label="total" value={`${totalMs} ms`} />
         </dl>
-        {withoutGraph.length ? <ul className="mt-4 border-t border-line pt-4 text-sm text-muted">{withoutGraph.map((line) => <li key={line} className="mt-1">— {line}</li>)}</ul> : null}
+        {withoutGraph.length ? <ul className="mt-4 border-t border-line pt-4 text-sm text-muted">{withoutGraph.map((line) => <li key={line} className="mt-1">• {line}</li>)}</ul> : null}
       </details>
     </div>
   );
@@ -1873,20 +2115,20 @@ function EvalView({ summary, demo, meta, onRefresh, onRunDemo, graphReady }: { s
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Text search alone</p>
           <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em]">A list of matching filenames.</h2>
           <ul className="mt-6 space-y-3 text-sm leading-6 text-muted">
-            <li>— Good when the issue names the right symbol.</li>
-            <li>— No explanation of how files are connected.</li>
-            <li>— No connected test impact.</li>
-            <li>— Leaves the agent to investigate the repository.</li>
+            <li>• Good when the issue names the right symbol.</li>
+            <li>• No explanation of how files are connected.</li>
+            <li>• No connected test impact.</li>
+            <li>• Leaves the agent to investigate the repository.</li>
           </ul>
         </article>
         <article className="rounded-[1.6rem] border border-[#efc0a6] bg-[#fff8f3] p-6 sm:p-7">
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">Lumos</p>
           <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em]">A shortlist with proof and tests.</h2>
           <ul className="mt-6 space-y-3 text-sm leading-6 text-muted">
-            <li>— Keeps the lexical shortlist as the safe default.</li>
-            <li>— Shows the call, coverage, and co-change paths.</li>
-            <li>— Finds tests connected to the proposed edit.</li>
-            <li>— Produces a compact, copyable agent brief.</li>
+            <li>• Keeps the lexical shortlist as the safe default.</li>
+            <li>• Shows the call, coverage, and co-change paths.</li>
+            <li>• Finds tests connected to the proposed edit.</li>
+            <li>• Produces a compact, copyable agent brief.</li>
           </ul>
         </article>
       </section>
@@ -1915,7 +2157,7 @@ function EvalView({ summary, demo, meta, onRefresh, onRunDemo, graphReady }: { s
         <summary className={`cursor-pointer text-sm font-semibold ${focusRing}`}>Open the full research benchmark</summary>
         <div className="mt-5 border-t border-line pt-5">
           <p className="max-w-4xl text-sm leading-6 text-muted">On {summary.n} frozen Django bugs, the previous experimental ranker tied BM25 at top-3 ({pct(summary.methods.hybrid.at3)}), while its top-1 result was {pct(summary.methods.hybrid.at1)} versus BM25 at {pct(summary.methods.bm25.at1)}. So Lumos does not claim to beat text search on every bug.</p>
-          <p className="mt-3 max-w-4xl text-sm leading-6 text-muted">The production rule is stricter: graph evidence is always attached, but it only reorders the shortlist when one candidate is corroborated by a connected covering test. The current value is inspectable proof, test impact, and a better agent handoff—not a blanket search-accuracy claim.</p>
+          <p className="mt-3 max-w-4xl text-sm leading-6 text-muted">The production rule is stricter: graph evidence is always attached, but it only reorders the shortlist when one candidate is corroborated by a connected covering test. The current value is inspectable proof, test impact, and a better agent handoff, not a blanket search-accuracy claim.</p>
           <div className="mt-6 grid grid-cols-3 gap-3 rounded-2xl border border-line bg-inset p-4">
             <MetricBlock label="Graph helped" value={String(summary.hybridVsBm25.improved)} />
             <MetricBlock label="Graph hurt" value={String(summary.hybridVsBm25.hurt)} />
@@ -1963,10 +2205,6 @@ function Badge({ children, tone = "muted" }: { children: React.ReactNode; tone?:
 
 function SmallStat({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0"><dt className="font-mono text-[9px] text-muted">{label}</dt><dd className="mt-1 truncate font-mono text-[11px] font-semibold">{value}</dd></div>;
-}
-
-function InfoTile({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
-  return <div className="rounded-2xl border border-line bg-panel p-4"><p className="font-mono text-[9px] text-muted">{label}</p><p className={`mt-2 truncate text-sm font-semibold ${accent ? "text-[#287a52]" : "text-foreground"}`}>{value}</p></div>;
 }
 
 function ProofMetric({ label, value, detail, tone = "muted" }: { label: string; value: string; detail: string; tone?: "accent" | "muted" }) {

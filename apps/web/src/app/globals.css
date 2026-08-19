@@ -2128,24 +2128,35 @@ body {
 }
 
 .workstation-sky {
-  background-color: #168fdc;
-  background-image: url("/lumos-sky-v2.png");
-  background-position: center 72%;
-  background-size: cover;
+  background: #edf6fb;
 }
 
 .workstation-shell {
-  --background: #f5fbff;
-  --foreground: #111a22;
-  --muted: #587181;
-  --line: #cfe0ea;
+  --background: #f1f7fb;
+  --foreground: #132331;
+  --muted: #627989;
+  --line: #d2e2eb;
   --accent: #c65f2c;
-  --lexical: #2f6fac;
+  --lexical: #246b95;
   --panel: #ffffff;
-  --inset: #f4faff;
+  --inset: #eaf4f9;
   --ring: #167fd1;
   color: var(--foreground);
-  box-shadow: 0 20px 70px rgb(17 85 125 / 0.2);
+  box-shadow: none;
+}
+
+.platform-sidebar {
+  background: #f8fcff;
+}
+
+.platform-topbar {
+  background: #fbfdff;
+}
+
+.onboarding-surface {
+  background:
+    radial-gradient(circle at 82% 24%, rgb(120 196 235 / 0.12), transparent 28%),
+    linear-gradient(145deg, rgb(255 255 255 / 0.58), transparent 48%);
 }
 
 .workstation-shell ::selection {
