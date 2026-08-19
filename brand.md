@@ -2,21 +2,25 @@
 
 Status: active
 
-Lumos is a workstation for a single question: what actually depends on this.
-The interface should feel like an editor that grew a map, not a marketing site.
+Lumos is a preflight and verification workspace for coding agents.
+The interface should feel like an editor that grew a map: calm, bright, exact,
+and visibly connected to a real repository.
 
 ## Palette
 
-Dark by default. Warm light as the one accent — the name is the lamp, not a gradient.
+Light blue and white by default. Warm orange is the one action accent; deeper
+blue is reserved for graph evidence and links.
 
-| Token | Light | Dark | Use |
-|---|---|---|---|
-| background | `#F4F1EA` | `#12110F` | page |
-| foreground | `#1A1916` | `#EDEAE3` | body |
-| muted | `#6F6B63` | `#9A958A` | secondary text |
-| line | `#DDD8CE` | `#2A2824` | borders |
-| accent | `#C45C26` | `#E08A3C` | graph evidence, live query |
-| lexical | `#3D6B8A` | `#7BA3C4` | word-search column |
+| Token | Value | Use |
+|---|---|---|
+| background | `#F5FBFF` | page |
+| foreground | `#111A22` | body |
+| muted | `#587181` | secondary text |
+| line | `#CFE0EA` | borders |
+| accent | `#C65F2C` | primary action, promoted result |
+| graph | `#2F6FAC` | graph proof, links, live trace |
+| panel | `#FFFFFF` | elevated surface |
+| inset | `#F4FAFF` | controls and secondary surface |
 
 ## Typography
 
@@ -26,5 +30,6 @@ Dark by default. Warm light as the one accent — the name is the lamp, not a gr
 
 ## Voice
 
-Short sentences. Name the file. Do not say "powerful" or "seamless".
-The graph column is "the chain". The lexical column is "word search".
+Short sentences. Name the file and the check. Do not say "powerful" or
+"seamless". Say "preflight," "the graph," "word search," "connected test,"
+and "Patch Guard." Never imply that a shortlist is the number of files searched.

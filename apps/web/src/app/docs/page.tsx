@@ -18,7 +18,8 @@ const docsNavigation = [
     title: "Use Lumos",
     links: [
       ["Index a repository", "#index-repository"],
-      ["Ask Lumos", "#ask-lumos"],
+      ["Preflight a change", "#ask-lumos"],
+      ["Verify a patch", "#verify-patch"],
       ["Inspect impact", "#inspect-impact"],
     ],
   },
@@ -40,6 +41,8 @@ const docsNavigation = [
 ] as const;
 
 const mcpTools = [
+  ["lumos.preflight_change", "Run before editing. Return ranked files, graph proof, connected tests, a context contract, and its digest."],
+  ["lumos.verify_patch", "Run after editing. Check the changed files and reported tests against a fresh graph-backed preflight."],
   ["lumos.find_relevant_files", "Turn an issue into ranked files, reasons, graph evidence, and likely tests."],
   ["lumos.explain_file_rank", "Explain why one file appears at its position for a specific issue."],
   ["lumos.impact", "Walk callers, callees, and coverage around a named symbol."],
@@ -67,7 +70,7 @@ export default function DocsPage() {
             <p className="docs-kicker">Documentation</p>
             <h1>Context your agent can inspect.</h1>
             <p>
-              Install Lumos, index a Python repository, and return ranked context with a HydraDB proof path attached.
+              Preflight an agent change, return ranked context with a HydraDB proof path, then verify the patch stayed inside it.
             </p>
           </div>
 
@@ -81,7 +84,7 @@ pnpm db:up
 pnpm probe
 
 pnpm lumos index /path/to/repo
-pnpm lumos ask "Describe the change"`}</code></pre>
+pnpm lumos preflight "Describe the change"`}</code></pre>
           </div>
         </div>
       </section>
@@ -104,7 +107,7 @@ pnpm lumos ask "Describe the change"`}</code></pre>
           <section id="overview" className="docs-section docs-section-lead">
             <h2>Lumos in one minute</h2>
             <p className="docs-lede">
-              Lumos is a retrieval engine that an IDE assistant calls before editing code. Word search finds likely names. HydraDB proves structural impact.
+              Lumos is the preflight and verification layer an IDE assistant calls around an edit. Word search finds likely names. HydraDB proves structural impact. Patch Guard checks what the agent actually changed.
             </p>
             <dl className="docs-return-map">
               <div>
@@ -118,6 +121,10 @@ pnpm lumos ask "Describe the change"`}</code></pre>
               <div>
                 <dt>Test impact</dt>
                 <dd>The checks connected to the symbols an agent is about to touch.</dd>
+              </div>
+              <div>
+                <dt>Patch Guard</dt>
+                <dd>A post-edit verdict on target coverage, unexpected scope, and connected tests.</dd>
               </div>
             </dl>
           </section>
@@ -156,9 +163,9 @@ pnpm probe`}</code></pre>
           </section>
 
           <section id="ask-lumos" className="docs-section">
-            <h2>Ask Lumos</h2>
+            <h2>Preflight a change</h2>
             <p>Describe the task as you would describe it to a coding agent. A bug report, issue, or stack trace all work.</p>
-            <pre><code>{`pnpm lumos ask "Changing set_cookie breaks signed cookie tests"`}</code></pre>
+            <pre><code>{`pnpm lumos preflight "Changing set_cookie breaks signed cookie tests"`}</code></pre>
             <div className="docs-result-shape">
               <div>
                 <span>Targets</span>
@@ -177,6 +184,15 @@ pnpm probe`}</code></pre>
                 <p>Checks likely to protect the change.</p>
               </div>
             </div>
+          </section>
+
+          <section id="verify-patch" className="docs-section">
+            <h2>Verify the agent&apos;s patch</h2>
+            <p>After the edit, report the repository-relative files that changed and the tests the agent ran.</p>
+            <pre><code>{`pnpm lumos verify "Changing set_cookie breaks signed cookie tests" \\
+  --changed django/http/response.py \\
+  --tests responses.test_cookie`}</code></pre>
+            <p>Patch Guard blocks a missing primary target and asks for review when the patch leaves the preflight shortlist or omits a connected test. It does not claim to execute the tests or inspect the diff contents.</p>
           </section>
 
           <section id="inspect-impact" className="docs-section">
@@ -199,7 +215,7 @@ pnpm lumos tests django.http.response.HttpResponseBase.set_cookie`}</code></pre>
     }
   }
 }`}</code></pre>
-            <p>Cursor, Claude Code, Codex, and other MCP clients can ask Lumos for context before they make an edit.</p>
+            <p>Cursor, Claude Code, Codex, and other MCP clients can call <code>lumos.preflight_change</code> before an edit and <code>lumos.verify_patch</code> after it.</p>
           </section>
 
           <section id="mcp-tools" className="docs-section">
@@ -263,6 +279,7 @@ pnpm db:restore`}</code></pre>
           <a href="#quick-start">Quick start</a>
           <a href="#index-repository">Index a repository</a>
           <a href="#ask-lumos">Ask Lumos</a>
+          <a href="#verify-patch">Verify a patch</a>
           <a href="#mcp-setup">MCP setup</a>
           <a href="#proof-paths">Proof paths</a>
           <a href="#evaluation">Evaluation</a>

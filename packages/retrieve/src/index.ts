@@ -17,5 +17,13 @@ export type {
   TestHit,
   TraversalReport,
 } from "./retrieve.ts";
+export { verifyPatch } from "./verify.ts";
+export type {
+  PatchStatus,
+  PatchVerification,
+  PatchVerificationCheck,
+  VerificationState,
+  VerifyPatchInput,
+} from "./verify.ts";
 export { summarizeEval } from "./metrics.ts";
 export type { EvalOutcome, EvalSummary, MethodMetrics } from "./metrics.ts";

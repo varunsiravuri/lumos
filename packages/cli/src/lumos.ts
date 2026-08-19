@@ -10,14 +10,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 import { HydraClient } from "@lumos/graph";
-import { buildCorpus, impact, retrieve } from "@lumos/retrieve";
+import { buildCorpus, impact, retrieve, verifyPatch } from "@lumos/retrieve";
 
 import { DEFAULT_REPO, DEFAULT_ROOT, lumosHome } from "./defaults.ts";
 
 const USAGE = `lumos — structural context for AI coders
 
   lumos index <repo-path> [--slug owner/name]
-  lumos ask <issue text | - >
+  lumos preflight <issue text | - >
+  lumos ask <issue text | - >       alias for preflight
+  lumos verify <issue text> --changed file[,file] [--tests test[,test]]
   lumos impact <symbol>
   lumos tests <symbol>
 
@@ -104,14 +106,14 @@ async function cmdIndex(): Promise<void> {
   console.log(`\nindexed ${slug}. Ask with: lumos ask "…"`);
 }
 
-async function cmdAsk(): Promise<void> {
+async function cmdPreflight(): Promise<void> {
   const raw = positionals().filter((token) => token !== "-").join(" ").trim();
   let issue = raw;
   if (raw === "" || rest.includes("-")) {
     issue = await readStdin();
   }
   if (!issue.trim()) {
-    console.error("usage: lumos ask \"<bug report>\"   or   lumos ask -");
+    console.error("usage: lumos preflight \"<bug report>\"   or   lumos preflight -");
     process.exit(1);
   }
 
@@ -140,6 +142,42 @@ async function cmdAsk(): Promise<void> {
     }
   }
   console.log(`\n${Date.now() - started}ms including BM25`);
+}
+
+async function cmdVerify(): Promise<void> {
+  const issue = positionals().join(" ").trim();
+  const changedFiles = (flag("--changed") ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  const testsRun = (flag("--tests") ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  if (!issue || changedFiles.length === 0) {
+    console.error("usage: lumos verify \"<issue>\" --changed file[,file] [--tests test[,test]]");
+    process.exit(1);
+  }
+
+  const repo = flag("--repo", DEFAULT_REPO)!;
+  const root = flag("--root", DEFAULT_ROOT)!;
+  const client = await requireClient();
+  const corpus = buildCorpus(root);
+  const result = await retrieve(client, corpus.index, issue, {
+    repo,
+    files: corpus.files,
+    limit: Number(flag("--limit", "12")),
+  });
+  const verification = verifyPatch({
+    changedFiles,
+    testsRun,
+    ranked: result.ranked,
+    tests: result.tests,
+    graphVerified: result.ranked.some((file) => file.evidence.length > 0),
+  });
+
+  console.log(`\n${verification.status.toUpperCase()}  score ${verification.score}/100`);
+  console.log(verification.summary);
+  for (const check of verification.checks) {
+    const mark = check.state === "pass" ? "✓" : check.state === "fail" ? "!" : "?";
+    console.log(`  ${mark} ${check.title}`);
+    console.log(`    ${check.detail}`);
+  }
+  if (verification.status === "blocked") process.exitCode = 2;
 }
 
 async function cmdImpact(kind: "impact" | "tests"): Promise<void> {
@@ -184,7 +222,11 @@ switch (command) {
     await cmdIndex();
     break;
   case "ask":
-    await cmdAsk();
+  case "preflight":
+    await cmdPreflight();
+    break;
+  case "verify":
+    await cmdVerify();
     break;
   case "impact":
     await cmdImpact("impact");

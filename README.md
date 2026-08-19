@@ -1,8 +1,10 @@
 # Lumos
 
-**Lumos checks a repository before an IDE assistant edits code.** It turns one
-change request into a small set of files, the relationships that justify them,
-the tests that protect the change, and a brief the agent can use immediately.
+**Lumos is the preflight and verification layer for coding agents.** Before an
+agent edits, it turns one request into a small set of files, the graph paths that
+justify them, and the tests that protect the change. After the edit, Patch Guard
+checks whether the agent touched the proved target, stayed inside the investigated
+scope, and reported a connected test.
 
 > BM25 finds likely names. HydraDB proves impact.
 
@@ -49,6 +51,11 @@ in a graph:
 - **Measured against the real baseline.** SWE-bench instances ship the gold patch
   for each issue, so retrieval is scored offline against the files the real fix
   touched, versus a BM25 text-search baseline.
+- **Patch Guard.** Compare the files and tests an agent reports after editing
+  with the graph-backed preflight. Missing primary targets block the patch;
+  unexpected scope and missing connected tests are surfaced for review.
+- **Persistent runs and activity.** Every browser preflight is saved locally
+  with its stage trace, ranking, tests, contract, and MCP/workspace activity.
 
 ## Status
 
@@ -102,9 +109,12 @@ pnpm api                  # HydraDB-backed API on :8787
 pnpm web                  # issue → files / tests / path, on :3000
 
 # Assistant interface
-pnpm lumos ask "Template filter join should not escape the joining string"
+pnpm lumos preflight "Template filter join should not escape the joining string"
+pnpm lumos verify "Template filter join should not escape the joining string" \
+  --changed django/template/defaultfilters.py \
+  --tests template_tests.filter_tests.test_join.FunctionTests.test_autoescape_off
 pnpm lumos impact django.http.response.HttpResponseBase.set_cookie
-pnpm mcp                  # MCP stdio: find_relevant_files, impact, tests_for_change
+pnpm mcp                  # MCP stdio: preflight_change, verify_patch, impact
 ```
 
 `pnpm db:up` prints `hydradb-ok` once the node round-trips a real query. A
@@ -122,7 +132,7 @@ rather than for the port.
 | `pnpm ingest` | Load JSONL into HydraDB |
 | `pnpm impact` | Blast radius of a symbol |
 | `pnpm retrieve` | Rank files for a bug report |
-| `pnpm lumos` | Assistant CLI: `index`, `ask`, `impact`, `tests` |
+| `pnpm lumos` | Assistant CLI: `index`, `preflight`, `verify`, `impact`, `tests` |
 | `pnpm mcp` | MCP server for Cursor / Claude Code / Codex |
 | `pnpm api` | HTTP API for the demo |
 | `pnpm web` | Issue-first demo UI |
@@ -137,20 +147,25 @@ for `/readyz` and Prometheus metrics.
 
 ```bash
 pnpm lumos index /path/to/repo
-pnpm lumos ask "Changing set_cookie breaks tests"
+pnpm lumos preflight "Changing set_cookie breaks tests"
+pnpm lumos verify "Changing set_cookie breaks tests" \
+  --changed django/http/response.py \
+  --tests responses.test_cookie
 pnpm lumos impact django.http.response.HttpResponseBase.set_cookie
 pnpm lumos tests django.http.response.HttpResponseBase.set_cookie
 ```
 
 MCP tools, over stdio (`pnpm mcp`):
 
+- `lumos.preflight_change(issue_text)`
+- `lumos.verify_patch(issue_text, changed_files, tests_run)`
 - `lumos.find_relevant_files(issue_text)`
 - `lumos.explain_file_rank(issue_text, file)`
 - `lumos.impact(symbol)`
 - `lumos.tests_for_change(symbol)`
 
-Cursor / Claude Code / Codex can call these before editing. Point an MCP client
-at `pnpm mcp` in this repo.
+Cursor / Claude Code / Codex can call `preflight_change` before editing and
+`verify_patch` after editing. Point an MCP client at `pnpm mcp` in this repo.
 
 ## Measuring retrieval
 

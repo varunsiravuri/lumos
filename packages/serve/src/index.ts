@@ -8,7 +8,25 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { HydraClient, Label } from "@lumos/graph";
-import { buildCorpus, impact, retrieve, summarizeEval, type Corpus, type EvalOutcome } from "@lumos/retrieve";
+import {
+  buildCorpus,
+  impact,
+  retrieve,
+  summarizeEval,
+  verifyPatch,
+  type Corpus,
+  type EvalOutcome,
+} from "@lumos/retrieve";
+
+import {
+  appendEvent,
+  createRunId,
+  getRun,
+  listEvents,
+  listRuns,
+  saveRun,
+  type RunTraceStep,
+} from "./run-store.ts";
 
 const PORT = Number(process.env.LUMOS_API_PORT ?? 8787);
 const REPO = process.env.LUMOS_REPO ?? "django/django";
@@ -109,10 +127,92 @@ const server = createServer(async (req, res) => {
       json(res, ready ? 200 : 503, {
         ready,
         repo: REPO,
+        root: ROOT,
+        workspace: process.cwd(),
         files,
         engine: "HydraDB algo.MSpaths",
-        product: "Lumos Impact Context for AI Coders",
+        product: "Lumos preflight and verification for coding agents",
+        runs: listRuns(500).length,
+        capabilities: ["preflight", "graph proof", "agent handoff", "patch guard"],
+        mcpTools: [
+          "lumos.preflight_change",
+          "lumos.verify_patch",
+          "lumos.explain_file_rank",
+          "lumos.impact",
+          "lumos.tests_for_change",
+        ],
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/runs") {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 30)));
+      json(res, 200, {
+        runs: listRuns(limit).map((run) => ({
+          id: run.id,
+          createdAt: run.createdAt,
+          completedAt: run.completedAt,
+          status: run.status,
+          request: run.request,
+          repo: run.repo,
+          elapsedMs: run.elapsedMs,
+          quality: run.quality,
+        })),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/runs/")) {
+      const id = decodeURIComponent(url.pathname.slice("/runs/".length));
+      const run = getRun(id);
+      if (!run) {
+        json(res, 404, { error: "run not found" });
+        return;
+      }
+      json(res, 200, run);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/events") {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 30)));
+      json(res, 200, { events: listEvents(limit) });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/verify") {
+      const body = JSON.parse(await readBody(req)) as {
+        runId?: string;
+        changedFiles?: string[];
+        testsRun?: string[];
+      };
+      if (!body.runId) {
+        json(res, 400, { error: "runId is required" });
+        return;
+      }
+      const run = getRun(body.runId);
+      if (!run) {
+        json(res, 404, { error: "run not found. Run a preflight before verifying the patch." });
+        return;
+      }
+      const result = run.result as {
+        ranked: Parameters<typeof verifyPatch>[0]["ranked"];
+        tests: Parameters<typeof verifyPatch>[0]["tests"];
+      };
+      const verification = verifyPatch({
+        changedFiles: body.changedFiles ?? [],
+        testsRun: body.testsRun ?? [],
+        ranked: result.ranked,
+        tests: result.tests,
+        graphVerified: run.quality.mode !== "text-only",
+      });
+      appendEvent({
+        source: "workspace",
+        tool: "lumos.verify_patch",
+        state: "complete",
+        summary: `${verification.status}: ${verification.changedFiles.length} changed files, ${verification.matchedTests.length} connected tests`,
+        runId: run.id,
+      });
+      json(res, 200, { runId: run.id, verifiedAt: new Date().toISOString(), ...verification });
       return;
     }
 
@@ -216,7 +316,66 @@ const server = createServer(async (req, res) => {
       });
       const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
       const graphChangedOrder = result.ranked[0]?.path !== result.lexical[0]?.path;
-      json(res, 200, {
+      const completedAt = new Date();
+      const elapsedMs = Date.now() - started;
+      const runId = createRunId();
+      const quality = {
+        filesChecked: loaded.files.length,
+        filesSelected: result.ranked.length,
+        graphEvidenceFiles,
+        testsFound: result.tests.length,
+        mode: graphChangedOrder ? "graph-promoted" as const : graphEvidenceFiles > 0 ? "graph-verified" as const : "text-only" as const,
+      };
+      const trace: RunTraceStep[] = [
+        {
+          id: "request",
+          label: "Request accepted",
+          detail: "A concrete code change was received and normalized.",
+          status: "complete",
+          elapsedMs: 0,
+        },
+        {
+          id: "scan",
+          label: "Repository checked",
+          detail: `${loaded.files.length.toLocaleString("en-US")} indexed files were searched.`,
+          status: "complete",
+          elapsedMs: Math.max(0, elapsedMs - result.traversal.elapsedMs),
+        },
+        {
+          id: "resolve",
+          label: "Names resolved",
+          detail: `${result.traversal.seedCount} request ${result.traversal.seedCount === 1 ? "seed was" : "seeds were"} matched to repository symbols.`,
+          status: "complete",
+          elapsedMs: result.traversal.elapsedMs,
+        },
+        {
+          id: "walk",
+          label: "HydraDB paths walked",
+          detail: `${result.traversal.pathCount.toLocaleString("en-US")} CALLS, COVERS, and CO_CHANGES paths were inspected.`,
+          status: "complete",
+          elapsedMs: result.traversal.elapsedMs,
+        },
+        {
+          id: "rank",
+          label: "Context narrowed",
+          detail: `${result.ranked.length} files and ${result.tests.length} connected tests were selected.`,
+          status: "complete",
+          elapsedMs,
+        },
+        {
+          id: "handoff",
+          label: "Agent context ready",
+          detail: quality.mode === "text-only"
+            ? "Text candidates are available, but graph proof is still missing."
+            : "The graph-backed edit plan is ready for an IDE agent.",
+          status: "complete",
+          elapsedMs,
+        },
+      ];
+      const payload = {
+        runId,
+        createdAt: completedAt.toISOString(),
+        request,
         ranked: result.ranked,
         lexical: result.lexical,
         structural: result.structural,
@@ -225,16 +384,32 @@ const server = createServer(async (req, res) => {
         unresolved: result.unresolved.slice(0, 12),
         traversal: result.traversal,
         graphOnly: result.graphOnly,
-        elapsedMs: Date.now() - started,
+        elapsedMs,
         withoutHydra: WITHOUT_HYDRA,
-        quality: {
-          filesChecked: loaded.files.length,
-          filesSelected: result.ranked.length,
-          graphEvidenceFiles,
-          testsFound: result.tests.length,
-          mode: graphChangedOrder ? "graph-promoted" : graphEvidenceFiles > 0 ? "graph-verified" : "text-only",
-        },
+        quality,
+        trace,
+      };
+      saveRun({
+        id: runId,
+        createdAt: new Date(started).toISOString(),
+        completedAt: completedAt.toISOString(),
+        status: "complete",
+        request,
+        repo: REPO,
+        elapsedMs,
+        result: payload,
+        trace,
+        quality,
       });
+      appendEvent({
+        source: "workspace",
+        tool: "lumos.preflight_change",
+        state: "complete",
+        summary: `${loaded.files.length} checked → ${result.ranked.length} files, ${result.tests.length} tests`,
+        elapsedMs,
+        runId,
+      });
+      json(res, 200, payload);
       return;
     }
 

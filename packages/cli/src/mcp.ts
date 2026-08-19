@@ -5,19 +5,26 @@
  *   pnpm mcp
  *
  * Tools:
+ *   lumos.preflight_change
+ *   lumos.verify_patch
  *   lumos.find_relevant_files
  *   lumos.explain_file_rank
  *   lumos.impact
  *   lumos.tests_for_change
  */
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 import { HydraClient } from "@lumos/graph";
-import { buildCorpus, impact, retrieve, type Corpus } from "@lumos/retrieve";
+import { buildCorpus, impact, retrieve, verifyPatch, type Corpus } from "@lumos/retrieve";
 
 import { DEFAULT_REPO, DEFAULT_ROOT } from "./defaults.ts";
 
 const PROTOCOL = "2024-11-05";
 const REPO = DEFAULT_REPO;
 const ROOT = DEFAULT_ROOT;
+const EVENTS_PATH = process.env.LUMOS_EVENTS_PATH ?? "data/lumos/events.jsonl";
 
 const client = new HydraClient();
 let corpus: Corpus | null = null;
@@ -37,6 +44,33 @@ interface JsonRpc {
 }
 
 const TOOLS = [
+  {
+    name: "lumos.preflight_change",
+    description:
+      "Run before editing. Search the indexed repository, use HydraDB paths to prove the relevant files and tests, and return a compact context contract with a SHA-256 digest.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue_text: { type: "string", description: "The concrete code change the agent is about to make." },
+        limit: { type: "number", description: "Maximum context files. Default 12." },
+      },
+      required: ["issue_text"],
+    },
+  },
+  {
+    name: "lumos.verify_patch",
+    description:
+      "Run after editing. Compare changed files and reported tests with a HydraDB-backed preflight and flag missing targets, unproved scope, or missing connected tests.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue_text: { type: "string", description: "The original code-change request." },
+        changed_files: { type: "array", items: { type: "string" }, description: "Repository-relative files changed by the agent." },
+        tests_run: { type: "array", items: { type: "string" }, description: "Test paths or qualified test names run by the agent." },
+      },
+      required: ["issue_text", "changed_files"],
+    },
+  },
   {
     name: "lumos.find_relevant_files",
     description:
@@ -85,6 +119,66 @@ const TOOLS = [
   },
 ];
 
+function logEvent(event: {
+  tool: string;
+  state: "complete" | "error";
+  summary: string;
+  elapsedMs: number;
+}): void {
+  try {
+    mkdirSync(dirname(EVENTS_PATH), { recursive: true });
+    appendFileSync(
+      EVENTS_PATH,
+      `${JSON.stringify({ id: randomUUID(), at: new Date().toISOString(), source: "mcp", ...event })}\n`,
+      "utf8",
+    );
+  } catch {
+    // A tool call still succeeds if local activity logging is unavailable.
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+
+async function buildPreflight(issue: string, limit: number) {
+  const loaded = loadCorpus();
+  const result = await retrieve(client, loaded.index, issue, {
+    repo: REPO,
+    files: loaded.files,
+    limit,
+  });
+  const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
+  const graphChangedOrder = result.ranked[0]?.path !== result.lexical[0]?.path;
+  const mode = graphChangedOrder ? "graph-promoted" : graphEvidenceFiles > 0 ? "graph-verified" : "text-only";
+  const contract = {
+    schema: "ContextContractV1",
+    request: issue,
+    repository: REPO,
+    targets: result.ranked.map((file, rank) => ({
+      rank: rank + 1,
+      path: file.path,
+      wordRank: file.bm25Rank,
+      reason: file.why[0] ?? "ranked by request context",
+      evidence: file.evidence.map((item) =>
+        [item.via, item.relTypes.join(" -> "), item.reached].filter(Boolean).join(" / "),
+      ),
+    })),
+    tests: result.tests.map((test) => ({ path: test.path, symbol: test.qualname, via: test.via })),
+    traversal: result.traversal,
+  } as const;
+  return {
+    loaded,
+    result,
+    mode,
+    contract,
+    digest: createHash("sha256").update(canonicalJson(contract)).digest("hex"),
+  };
+}
+
 function send(message: JsonRpc): void {
   const json = JSON.stringify(message);
   const payload = Buffer.from(json, "utf8");
@@ -109,16 +203,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     throw new Error("HydraDB is not ready. Run pnpm db:up.");
   }
 
-  if (name === "lumos.find_relevant_files") {
+  if (name === "lumos.find_relevant_files" || name === "lumos.preflight_change") {
     const issue = String(args.issue_text ?? "");
     if (!issue.trim()) throw new Error("issue_text is required");
-    const loaded = loadCorpus();
-    const result = await retrieve(client, loaded.index, issue, {
-      repo: REPO,
-      files: loaded.files,
-      limit: Number(args.limit ?? 12),
-    });
+    const preflight = await buildPreflight(issue, Number(args.limit ?? 12));
+    const { result } = preflight;
     return {
+      status: preflight.mode === "text-only" ? "needs-review" : "ready-to-edit",
+      repository: { name: REPO, filesChecked: preflight.loaded.files.length },
       files: result.ranked.map((file, rank) => ({
         rank: rank + 1,
         path: file.path,
@@ -129,6 +221,31 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       tests: result.tests,
       hydradb: result.traversal,
       seeds: result.seeds.map((seed) => ({ via: seed.via, path: seed.path })),
+      contextContract: name === "lumos.preflight_change" ? preflight.contract : undefined,
+      digest: name === "lumos.preflight_change" ? preflight.digest : undefined,
+    };
+  }
+
+  if (name === "lumos.verify_patch") {
+    const issue = String(args.issue_text ?? "");
+    const changedFiles = Array.isArray(args.changed_files) ? args.changed_files.map(String) : [];
+    const testsRun = Array.isArray(args.tests_run) ? args.tests_run.map(String) : [];
+    if (!issue.trim()) throw new Error("issue_text is required");
+    if (changedFiles.length === 0) {
+      throw new Error("changed_files must contain at least one repository-relative path");
+    }
+    const preflight = await buildPreflight(issue, 12);
+    return {
+      ...verifyPatch({
+        changedFiles,
+        testsRun,
+        ranked: preflight.result.ranked,
+        tests: preflight.result.tests,
+        graphVerified: preflight.mode !== "text-only",
+      }),
+      repository: REPO,
+      preflightDigest: preflight.digest,
+      hydradb: preflight.result.traversal,
     };
   }
 
@@ -207,9 +324,23 @@ async function handle(message: JsonRpc): Promise<void> {
   if (method === "tools/call") {
     const name = String(params?.name ?? "");
     const args = (params?.arguments as Record<string, unknown> | undefined) ?? {};
+    const started = Date.now();
     try {
-      ok(id, text(await callTool(name, args)));
+      const result = await callTool(name, args);
+      logEvent({
+        tool: name,
+        state: "complete",
+        summary: name === "lumos.verify_patch" ? "patch checked against graph-backed preflight" : "tool call completed",
+        elapsedMs: Date.now() - started,
+      });
+      ok(id, text(result));
     } catch (error) {
+      logEvent({
+        tool: name,
+        state: "error",
+        summary: error instanceof Error ? error.message : String(error),
+        elapsedMs: Date.now() - started,
+      });
       fail(id, error instanceof Error ? error.message : String(error));
     }
     return;
