@@ -157,7 +157,7 @@ export async function loadExtraction(
 
   const symbolRows: NodeRow[] = [...uniqueSymbols].map(([vertex, symbol]) => ({
     vertex,
-    ukey: ukey.symbol(repo, `${symbol.path}#${symbol.qualname}`),
+    ukey: ukey.symbol(repo, symbol.qualname),
     qualname: symbol.qualname,
     name: symbol.name,
     kind: symbol.kind,

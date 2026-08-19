@@ -1,11 +1,13 @@
 # Lumos
 
-**Impact-aware code retrieval on a graph.** Instead of "what code looks like my
-query," Lumos answers "what actually breaks if I change this" — and shows the
-path that proves it.
+**Lumos checks a repository before an IDE assistant edits code.** It turns one
+change request into a small set of files, the relationships that justify them,
+the tests that protect the change, and a brief the agent can use immediately.
 
-Built for [Hack Hydra](https://hackhydra.hydradb.com/) (Aug 12–20, 2026), Track 02 —
-*Repos, Dependencies and Code as Graphs*, direction B.
+> BM25 finds likely names. HydraDB proves impact.
+
+Built for [Hack Hydra](https://hackhydra.hydradb.com/) (Aug 12–20, 2026), Track 02B —
+code graphs for IDE assistants.
 
 ---
 
@@ -46,12 +48,22 @@ in a graph:
   line 88, and this test covers it." An embedding can never explain itself.
 - **Measured against the real baseline.** SWE-bench instances ship the gold patch
   for each issue, so retrieval is scored offline against the files the real fix
-  touched, versus an embedding-only baseline.
+  touched, versus a BM25 text-search baseline.
 
 ## Status
 
-Ingestion and impact analysis work end to end on real repositories. Retrieval
-and SWE-bench evaluation are in progress.
+The engine, issue-first UI, CLI, and MCP tools are in place. Retrieval is scored
+three ways on 114 Django SWE-bench Lite bugs: BM25 only, graph only, and hybrid.
+The product keeps BM25 as the safe shortlist, then uses HydraDB to attach callers,
+coverage, co-change paths, and tests. Graph evidence only reorders results when a
+single candidate is corroborated by a connected covering test; otherwise Lumos
+shows the text matches as unverified and will not create an agent handoff.
+
+The frozen earlier ranking experiment tied BM25 at top-3 (74.6%) but trailed at
+top-1 (52.6% versus 55.3%). Lumos does not claim to beat text search on every
+bug. Its current value is inspectable proof, test impact, and a compact handoff.
+The stricter promotion gate should be re-evaluated before publishing a new
+top-1 figure.
 
 Measured on Django (`febefb175e`), on a MacBook with an M4 and 16GB of RAM:
 
@@ -67,6 +79,9 @@ and `SessionMiddleware.process_response` two hops out in different Django
 applications, along with the 15 tests that exercise them — each with the call
 path that justifies it.
 
+Django is a dataset, not the product. The same `lumos index` / `lumos ask`
+path works on any Python repo HydraDB can hold.
+
 Run `pnpm probe` for a self-contained end-to-end check against a live node.
 
 ## Quickstart
@@ -80,6 +95,16 @@ pnpm install
 
 pnpm db:up                # starts HydraDB, blocks until it answers a query
 pnpm probe                # end-to-end impact analysis check, prints `probe-ok`
+
+# Load Django, then open the demo
+pnpm ingest data/extract/django.jsonl data/extract/django.cochange.jsonl
+pnpm api                  # HydraDB-backed API on :8787
+pnpm web                  # issue → files / tests / path, on :3000
+
+# Assistant interface
+pnpm lumos ask "Template filter join should not escape the joining string"
+pnpm lumos impact django.http.response.HttpResponseBase.set_cookie
+pnpm mcp                  # MCP stdio: find_relevant_files, impact, tests_for_change
 ```
 
 `pnpm db:up` prints `hydradb-ok` once the node round-trips a real query. A
@@ -93,10 +118,60 @@ rather than for the port.
 | `pnpm db:reset` | Destroy the local graph and start from empty |
 | `pnpm db:logs` | Follow the node log |
 | `pnpm probe` | End-to-end write, traverse and assert against HydraDB |
+| `pnpm extract` | Parse a repo into JSONL |
+| `pnpm ingest` | Load JSONL into HydraDB |
+| `pnpm impact` | Blast radius of a symbol |
+| `pnpm retrieve` | Rank files for a bug report |
+| `pnpm lumos` | Assistant CLI: `index`, `ask`, `impact`, `tests` |
+| `pnpm mcp` | MCP server for Cursor / Claude Code / Codex |
+| `pnpm api` | HTTP API for the demo |
+| `pnpm web` | Issue-first demo UI |
+| `pnpm eval` | SWE-bench Lite: BM25 vs graph vs hybrid |
+| `pnpm db:restore` | Reload the Django demo graph after eval |
 | `pnpm typecheck` | Typecheck the workspace |
 
 The node listens on `7687` for Bolt, `8443` for the HTTP query API, and `9090`
 for `/readyz` and Prometheus metrics.
+
+## Assistant interface
+
+```bash
+pnpm lumos index /path/to/repo
+pnpm lumos ask "Changing set_cookie breaks tests"
+pnpm lumos impact django.http.response.HttpResponseBase.set_cookie
+pnpm lumos tests django.http.response.HttpResponseBase.set_cookie
+```
+
+MCP tools, over stdio (`pnpm mcp`):
+
+- `lumos.find_relevant_files(issue_text)`
+- `lumos.explain_file_rank(issue_text, file)`
+- `lumos.impact(symbol)`
+- `lumos.tests_for_change(symbol)`
+
+Cursor / Claude Code / Codex can call these before editing. Point an MCP client
+at `pnpm mcp` in this repo.
+
+## Measuring retrieval
+
+```bash
+pnpm eval data/swebench/lite.jsonl --repo django/django --root data/repos/django
+```
+
+Three columns, 114 Django SWE-bench Lite bugs, gold = the one non-test file the
+merged patch actually touched:
+
+| Method | What it is |
+|---|---|
+| BM25 only | word search |
+| Graph only | HydraDB walk from named seeds |
+| Hybrid | BM25 seeds names, HydraDB proves impact |
+
+Eval wipes the live graph. Restore the demo afterwards:
+
+```bash
+pnpm db:restore
+```
 
 ## How Lumos uses HydraDB
 
@@ -127,10 +202,15 @@ documentation.
 ## Repository layout
 
 ```
-infra/              HydraDB development node (docker compose)
+infra/              HydraDB + MinIO (docker compose)
 scripts/            Lifecycle and readiness scripts
-packages/graph/     HydraDB client, value decoding, traversal primitives
-docs/               Engine constraints and design notes
+packages/graph/     HydraDB client, traversal
+packages/ingest/    JSONL → HydraDB
+packages/retrieve/  Mentions, BM25, hybrid ranker, SWE-bench eval
+packages/serve/     Demo HTTP API
+packages/cli/       `lumos` CLI and MCP server
+apps/web/           Issue-first demo UI
+docs/               Engine constraints
 ```
 
 ## Attribution

@@ -1,19 +1,75 @@
 name: lumos
 
+# HydraDB keeps its durable state in S3-compatible object storage, and it needs
+# that store to support conditional writes: SlateDB updates its manifest with a
+# compare-and-swap, and the writer lease for a cell is itself an object-store
+# CAS. The `local` filesystem provider cannot do either — it fails with
+# `put_opts with mode PutMode::Update not yet implemented` — which is invisible
+# until the node restarts and has to reacquire its lease, at which point every
+# write starts failing while reads carry on working.
+#
+# MinIO is the smallest thing that behaves like the real target. It also means
+# development runs the same storage path as production rather than a fallback.
+
 services:
+  minio:
+    image: minio/minio:latest
+    container_name: lumos-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_USER:-lumos}"
+      MINIO_ROOT_PASSWORD: "${MINIO_PASSWORD:-lumos-development-secret}"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - ../.hydradb/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  # One-shot: create the bucket, then exit. HydraDB waits on it completing
+  # rather than on MinIO merely being up, because a missing bucket surfaces as
+  # an opaque internal error on the first write.
+  minio-init:
+    image: minio/mc:latest
+    container_name: lumos-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set lumos http://minio:9000 "${MINIO_USER:-lumos}" "${MINIO_PASSWORD:-lumos-development-secret}" &&
+        mc mb --ignore-existing "lumos/${MINIO_BUCKET:-hydradb}" &&
+        echo "bucket ${MINIO_BUCKET:-hydradb} ready"
+
   hydradb:
     image: ghcr.io/hydra-db/hydradb:latest
     container_name: lumos-hydradb
-    # The image runs as UID/GID 10001, but the bind-mounted store is owned by the
-    # host user. Running as the host user keeps the mounted directories writable.
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    # The image runs as UID/GID 10001, but the bind-mounted cache is owned by
+    # the host user. Running as the host user keeps the mount writable.
     user: "${HOST_UID:-501}:${HOST_GID:-20}"
     ports:
       - "7687:7687" # Bolt
       - "8443:8443" # HTTP query API
       - "9090:9090" # admin: /readyz and /metrics
     environment:
-      CLOUD_PROVIDER: local
-      LOCAL_PATH: /data/store
+      CLOUD_PROVIDER: aws
+      AWS_BUCKET_NAME: "${MINIO_BUCKET:-hydradb}"
+      AWS_ENDPOINT: http://minio:9000
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ALLOW_HTTP: "true"
+      AWS_ACCESS_KEY_ID: "${MINIO_USER:-lumos}"
+      AWS_SECRET_ACCESS_KEY: "${MINIO_PASSWORD:-lumos-development-secret}"
       GRAPH_NAMESPACE: default
       GRAPH_ID: default
       GRAPH_CELL_ID: cell-0
@@ -24,11 +80,15 @@ services:
       GRAPH_DATA_CACHE_DIR: /data/cache
       GRAPH_AUTH_TOKEN_FILE: /data/auth-token
       GRAPH_ALLOW_PLAINTEXT: "true"
+      # Ingestion writes tens of thousands of edges per statement. The 30s
+      # default is sized for interactive queries, and a batch that lands while
+      # SlateDB is compacting will exceed it — intermittently, which is worse
+      # than never. Reads are unaffected: they finish in milliseconds.
+      GRAPH_MAX_QUERY_RUNTIME_MS: "180000"
       # graph-node's async query futures overflow the default thread stack; without
       # this the node serves /readyz and then aborts on the first query.
       RUST_MIN_STACK: "33554432"
     volumes:
-      - ../.hydradb/store:/data/store
       - ../.hydradb/cache:/data/cache
       - ./auth-token:/data/auth-token:ro
     # No container healthcheck: the image ships only `sh`, with no curl, wget or nc,

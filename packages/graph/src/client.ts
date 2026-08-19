@@ -57,6 +57,28 @@ export interface EdgeRow {
   [property: string]: string | number | boolean;
 }
 
+/**
+ * Statuses worth trying again. All of them mean the request never reached the
+ * query engine, so replaying it cannot double-apply a write.
+ *
+ * A 500 is deliberately absent: the node may have partially applied the
+ * statement, and a blind retry of a non-idempotent `CREATE` would duplicate it.
+ */
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
+
+const MAX_ATTEMPTS = 4;
+
+function isTransport(error: unknown): boolean {
+  // A restarted node leaves live sockets in the pool, and the next request
+  // fails at the transport layer rather than with a status. Node reports this
+  // as an opaque `TypeError: fetch failed`, so the cause has to be unwrapped.
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as { cause?: { code?: string } }).cause;
+  return typeof cause?.code === "string";
+}
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 export class HydraClient {
   readonly config: HydraConfig;
 
@@ -65,6 +87,26 @@ export class HydraClient {
   }
 
   async query(cypher: string, options: QueryOptions = {}): Promise<QueryResult> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.attempt(cypher, options);
+      } catch (error) {
+        const retryable =
+          isTransport(error) ||
+          (error instanceof HydraQueryError && RETRYABLE_STATUS.has(error.status));
+
+        if (!retryable || attempt === MAX_ATTEMPTS) throw error;
+        lastError = error;
+        await delay(250 * 2 ** (attempt - 1));
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async attempt(cypher: string, options: QueryOptions): Promise<QueryResult> {
     const { httpUrl, graph, namespace, cellId, token } = this.config;
 
     const body: Record<string, unknown> = { cell_id: cellId, query: cypher };

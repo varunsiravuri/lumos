@@ -1,0 +1,10 @@
+{
+  "name": "@lumos/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@lumos/graph": "workspace:*",
+    "@lumos/retrieve": "workspace:*"
+  }
+}

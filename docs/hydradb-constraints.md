@@ -64,10 +64,37 @@ once via `relTypes`, which is the practical way to walk a mixed code graph.
 - Symbol lookup cannot use substring matching at query time. Name resolution
   happens during ingest, and derived relationships such as co-change coupling
   are materialised as weighted edges, which is the graph-native form anyway.
+- `STARTS WITH` being the one available string predicate is why every seedable
+  node carries a `ukey` prefixed by its repository: a whole snapshot can be
+  selected by prefix, and the missing `ENDS WITH` is worked around by resolving
+  a bare name server-side and filtering the qualified form on the client.
+
+**`UNWIND` batches only one-hop relationship patterns.** A batched single-node
+lookup — the natural way to resolve twenty names from an issue in one round trip
+— is rejected with "UNWIND batch supports one-hop relationships only":
+
+```cypher
+-- rejected
+UNWIND $rows AS row MATCH (n:Symbol {name: row.name}) RETURN n.qualname
+```
+
+Multi-value lookup therefore goes one of two ways: `sourceValues` on a path
+procedure, which resolves the whole seed set server-side, or a small number of
+concurrent single-node queries. Lumos uses both — the path procedure for
+traversal, concurrent lookups for name resolution, since the latter needs to
+know which name matched what.
 
 Aggregates are limited to `count`, `sum`, `avg` and `collect` — there is no `min`
 or `max`, and `WITH` is pass-through only, with no aliasing, filtering or
 ordering. Multi-stage aggregation pipelines belong in application code.
+`count(*)` is supported but `count(n)` over a node binding is not; it fails with
+a message about property value types, which does not describe the problem.
+
+Reads are also bounded by admission control rather than by patience. A query
+whose label scan exceeds 250,000 candidate vertices is refused outright with
+`resource_exhausted`, so counting all symbols in a large graph fails while a
+seeded traversal through the same data returns in milliseconds. Queries have to
+start from an indexed property, not from a label.
 
 Property values are integers, floats, booleans and strings. There are no list
 properties, so anything set-valued — a symbol's decorators, a file's exported

@@ -1,4 +1,10 @@
 {
   "files": [],
-  "references": [{ "path": "./packages/graph" }, { "path": "./packages/ingest" }]
+  "references": [
+    { "path": "./packages/graph" },
+    { "path": "./packages/ingest" },
+    { "path": "./packages/retrieve" },
+    { "path": "./packages/serve" },
+    { "path": "./packages/cli" }
+  ]
 }
