@@ -27,6 +27,7 @@ export interface PublicWorkspaceRecord {
   graphSymbols: number;
   graphSymbolsCapped: boolean;
   graphReady: boolean;
+  testFiles: number;
   addedAt: string;
   updatedAt: string;
   url?: string;
@@ -41,6 +42,7 @@ export function publicWorkspace(
     files: number;
     graphFiles: number;
     graphSymbols: number;
+    testFiles: number;
     serviceReady: boolean;
   },
 ): PublicWorkspaceRecord {
@@ -56,6 +58,7 @@ export function publicWorkspace(
     graphSymbols: details.graphSymbols,
     graphSymbolsCapped: details.graphSymbols >= 64,
     graphReady,
+    testFiles: details.testFiles,
     addedAt: record.addedAt,
     updatedAt: record.updatedAt,
     ...(record.url ? { url: record.url } : {}),

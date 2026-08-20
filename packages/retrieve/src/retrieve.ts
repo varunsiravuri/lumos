@@ -30,7 +30,7 @@ import { resolveSeeds, type Seed } from "./seeds.ts";
 
 /** Relationship groups walked from each kind of seed, with how much each is trusted. */
 const SYMBOL_EDGES = [Edge.CALLS, Edge.COVERS];
-const FILE_EDGES = [Edge.CO_CHANGES];
+export const FILE_EDGES = [Edge.IMPORTS, Edge.CO_CHANGES];
 
 const EDGE_WEIGHT: Record<string, number> = {
   // A call is a hard fact about the code as it is.
@@ -184,6 +184,10 @@ function accumulate(
     if (!seed) continue;
 
     for (let depth = 0; depth < path.nodes.length; depth += 1) {
+      // BM25-derived file seeds are hypotheses, not names supplied by the
+      // request. Their origin file remains lexical-only; only a relationship
+      // reached at depth 1+ counts as structural evidence.
+      if (depth === 0 && seed.via.startsWith("lexical:")) continue;
       const node = path.nodes[depth]!;
       const filePath = String(node.properties.path ?? "");
       if (!eligible.has(filePath)) continue;
@@ -221,6 +225,32 @@ export interface RetrieveResult {
   traversal: TraversalReport;
   /** Files the graph surfaced that the lexical ranking placed nowhere useful. */
   graphOnly: string[];
+}
+
+export type RetrievalProofMode = "graph-promoted" | "graph-verified" | "text-only";
+
+export function retrievalProof(result: RetrieveResult): {
+  mode: RetrievalProofMode;
+  graphEvidenceFiles: number;
+  requestSeedsResolved: number;
+  requestMismatch: boolean;
+} {
+  const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
+  const requestSeedsResolved = result.seeds.filter((seed) => !seed.via.startsWith("lexical:")).length;
+  const requestMismatch = result.unresolved.length > 0 && requestSeedsResolved === 0;
+  const graphChangedOrder = result.ranked[0]?.path !== result.lexical[0]?.path;
+  return {
+    graphEvidenceFiles,
+    requestSeedsResolved,
+    requestMismatch,
+    mode: requestMismatch
+      ? "text-only"
+      : graphChangedOrder
+        ? "graph-promoted"
+        : graphEvidenceFiles > 0
+          ? "graph-verified"
+          : "text-only",
+  };
 }
 
 function whyFrom(evidence: Evidence[], lexicalScore: number, bm25Rank: number | null): string[] {
@@ -406,6 +436,7 @@ export async function retrieve(
   const evidenceFlags = (evidence: Evidence[]) => ({
     seedHit: evidence.some((item) => item.depth === 0 && item.relTypes.length === 0),
     callHit: evidence.some((item) => item.relTypes.includes(Edge.CALLS)),
+    importHit: evidence.some((item) => item.relTypes.includes(Edge.IMPORTS)),
     cochangeHit: evidence.some((item) => item.relTypes.includes(Edge.CO_CHANGES)),
   });
 
@@ -416,7 +447,10 @@ export async function retrieve(
     const flags = evidenceFlags(evidence);
     return Math.min(
       1,
-      (flags.seedHit ? 0.7 : 0) + (flags.callHit ? 0.25 * Math.min(1, graph) : 0) + (flags.cochangeHit ? 0.15 : 0),
+      (flags.seedHit ? 0.7 : 0) +
+        (flags.callHit ? 0.25 * Math.min(1, graph) : 0) +
+        (flags.importHit ? 0.1 : 0) +
+        (flags.cochangeHit ? 0.15 : 0),
     );
   };
 

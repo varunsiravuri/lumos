@@ -17,7 +17,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { HydraClient } from "@lumos/graph";
-import { buildCorpus, impact, retrieve, verifyPatch, type Corpus } from "@lumos/retrieve";
+import { buildCorpus, impact, retrievalProof, retrieve, verifyPatch, type Corpus } from "@lumos/retrieve";
 
 import { DEFAULT_REPO, DEFAULT_ROOT } from "./defaults.ts";
 
@@ -152,9 +152,7 @@ async function buildPreflight(issue: string, limit: number) {
     testFiles: loaded.testFiles,
     limit,
   });
-  const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
-  const graphChangedOrder = result.ranked[0]?.path !== result.lexical[0]?.path;
-  const mode = graphChangedOrder ? "graph-promoted" : graphEvidenceFiles > 0 ? "graph-verified" : "text-only";
+  const mode = retrievalProof(result).mode;
   const contract = {
     schema: "ContextContractV1",
     request: issue,
@@ -244,6 +242,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
         ranked: preflight.result.ranked,
         tests: preflight.result.tests,
         graphVerified: preflight.mode !== "text-only",
+        testFilesDetected: preflight.loaded.testFiles.length,
       }),
       repository: REPO,
       preflightDigest: preflight.digest,

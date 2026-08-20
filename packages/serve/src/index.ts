@@ -16,6 +16,7 @@ import {
   buildCorpus,
   explicitQuotedIdentifiers,
   impact,
+  retrievalProof,
   retrieve,
   summarizeEval,
   verifyPatch,
@@ -228,12 +229,14 @@ async function graphStats(repo: string, serviceReady = true): Promise<{ files: n
 
 async function workspaceResponse(record: WorkspaceRecord, active: string, serviceReady: boolean) {
   const files = workspaceFiles(record);
+  const testFiles = existsSync(record.root) ? loadCorpus(record).testFiles.length : 0;
   const graph = await graphStats(record.slug, serviceReady);
   return publicWorkspace(record, {
     active: record.slug === active,
     files,
     graphFiles: graph.files,
     graphSymbols: graph.symbols,
+    testFiles,
     serviceReady,
   });
 }
@@ -468,6 +471,7 @@ const server = createServer(async (req, res) => {
         graphFiles: repository.graphFiles,
         graphSymbols: repository.graphSymbols,
         graphSymbolsCapped: repository.graphSymbolsCapped,
+        testFiles: repository.testFiles,
         workspaces: workspaces.list().length,
         engine: "HydraDB algo.MSpaths",
         product: "Lumos preflight and verification for coding agents",
@@ -710,6 +714,7 @@ const server = createServer(async (req, res) => {
         ranked: result.ranked,
         tests: result.tests,
         graphVerified: run.quality.mode !== "text-only",
+        testFilesDetected: run.quality.testFilesDetected,
       });
       appendEvent({
         source: "workspace",
@@ -865,8 +870,8 @@ const server = createServer(async (req, res) => {
         testFiles: loaded.testFiles,
         limit: body.limit ?? 12,
       });
-      const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
-      const graphChangedOrder = result.ranked[0]?.path !== result.lexical[0]?.path;
+      const proof = retrievalProof(result);
+      const { graphEvidenceFiles, requestSeedsResolved } = proof;
       const completedAt = new Date();
       const elapsedMs = Date.now() - started;
       const runId = createRunId();
@@ -875,7 +880,10 @@ const server = createServer(async (req, res) => {
         filesSelected: result.ranked.length,
         graphEvidenceFiles,
         testsFound: result.tests.length,
-        mode: graphChangedOrder ? "graph-promoted" as const : graphEvidenceFiles > 0 ? "graph-verified" as const : "text-only" as const,
+        testFilesDetected: loaded.testFiles.length,
+        requestSeedsResolved,
+        unresolvedMentions: result.unresolved.length,
+        mode: proof.mode,
       };
       const trace: RunTraceStep[] = [
         {
@@ -895,14 +903,18 @@ const server = createServer(async (req, res) => {
         {
           id: "resolve",
           label: "Names resolved",
-          detail: `${result.traversal.seedCount} request ${result.traversal.seedCount === 1 ? "seed was" : "seeds were"} matched to repository symbols.`,
+          detail: requestSeedsResolved > 0
+            ? `${requestSeedsResolved} request ${requestSeedsResolved === 1 ? "anchor was" : "anchors were"} resolved in this repository.`
+            : result.unresolved.length > 0
+              ? `No request names resolved in this repository; ${result.unresolved.slice(0, 2).join(", ")} ${result.unresolved.length === 1 ? "was" : "were"} unmatched.`
+              : "No explicit repository name was supplied; structural expansion started from the strongest text matches.",
           status: "complete",
           elapsedMs: result.traversal.elapsedMs,
         },
         {
           id: "walk",
           label: "HydraDB paths walked",
-          detail: `${result.traversal.pathCount.toLocaleString("en-US")} CALLS, COVERS, and CO_CHANGES paths were inspected.`,
+          detail: `${result.traversal.pathCount.toLocaleString("en-US")} CALLS, COVERS, IMPORTS, and CO_CHANGES paths were inspected.`,
           status: "complete",
           elapsedMs: result.traversal.elapsedMs,
         },

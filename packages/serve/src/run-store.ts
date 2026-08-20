@@ -28,6 +28,9 @@ export interface StoredRun {
     filesSelected: number;
     graphEvidenceFiles: number;
     testsFound: number;
+    testFilesDetected?: number;
+    requestSeedsResolved?: number;
+    unresolvedMentions?: number;
     mode: "graph-promoted" | "graph-verified" | "text-only";
   };
 }

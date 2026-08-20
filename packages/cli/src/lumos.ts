@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 import { HydraClient } from "@lumos/graph";
-import { buildCorpus, impact, listPythonFiles, listTypeScriptFiles, retrieve, verifyPatch } from "@lumos/retrieve";
+import { buildCorpus, impact, listPythonFiles, listTypeScriptFiles, retrievalProof, retrieve, verifyPatch } from "@lumos/retrieve";
 
 import { absoluteRepoRoot, upsertEnv, writeCursorConnect } from "./connect.ts";
 import { DEFAULT_REPO, DEFAULT_ROOT, lumosHome } from "./defaults.ts";
@@ -240,7 +240,7 @@ async function cmdPreflight(): Promise<void> {
     limit: Number(flag("--limit", "12")),
   });
 
-  const proof = result.ranked.some((file) => file.evidence.length > 0) ? "graph-proved" : "text-only";
+  const proof = retrievalProof(result).mode === "text-only" ? "text-only" : "graph-proved";
   console.log(`\n${result.traversal.engine}  ${result.traversal.elapsedMs}ms  ${result.traversal.pathCount} paths  ${result.seeds.length} seeds  ${proof}`);
   console.log("\nfiles to edit:");
   for (const [index, file] of result.ranked.entries()) {
@@ -282,6 +282,7 @@ async function cmdVerify(): Promise<void> {
     ranked: result.ranked,
     tests: result.tests,
     graphVerified: result.ranked.some((file) => file.evidence.length > 0),
+    testFilesDetected: corpus.testFiles.length,
   });
 
   console.log(`\n${verification.status.toUpperCase()}  score ${verification.score}/100`);

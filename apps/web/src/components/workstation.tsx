@@ -96,6 +96,9 @@ interface RetrieveResult {
     filesSelected: number;
     graphEvidenceFiles: number;
     testsFound: number;
+    testFilesDetected?: number;
+    requestSeedsResolved?: number;
+    unresolvedMentions?: number;
     mode: "graph-promoted" | "graph-verified" | "text-only";
   };
   trace: {
@@ -119,6 +122,7 @@ interface Meta {
   graphFiles: number;
   graphSymbols: number;
   graphSymbolsCapped: boolean;
+  testFiles: number;
   workspaces?: number;
   engine: string;
   runs: number;
@@ -195,6 +199,7 @@ interface RepositoryRecord {
   graphSymbols: number;
   graphSymbolsCapped: boolean;
   graphReady: boolean;
+  testFiles: number;
   addedAt: string;
   updatedAt: string;
   url?: string;
@@ -304,7 +309,7 @@ function sourceName(meta: Meta | null): string {
 
 function repositoryStatus(repository: RepositoryRecord): string {
   if (repository.status === "ready") {
-    return `${fmt(repository.files)} files · graph ready`;
+    return `${fmt(repository.files)} files · ${fmt(repository.testFiles ?? 0)} test files · graph indexed`;
   }
   if (repository.status === "unindexed") return `${fmt(repository.files)} files · graph not indexed`;
   if (repository.status === "indexing") return "Indexing graph…";
@@ -329,6 +334,7 @@ function relationLabel(evidence: Evidence | undefined): string {
   if (evidence.relTypes.includes("COVERS")) return "covered by test";
   if (evidence.relTypes.includes("CO_CHANGES")) return "changed together";
   if (evidence.relTypes.includes("CALLS")) return "call chain";
+  if (evidence.relTypes.includes("IMPORTS")) return "import path";
   if (evidence.depth === 0) return "named seed";
   return "graph evidence";
 }
@@ -894,7 +900,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
               <p className="hidden truncate text-sm font-medium text-foreground sm:block lg:hidden">{workspaceTitle(view, meta)}</p>
             </div>
             <div className="flex items-center gap-3">
-              {repositorySelected ? <span className="hidden md:block"><StatusPill ready={graphReady}>{graphReady ? "Graph ready" : meta?.serviceReady ? "Graph not indexed" : "Graph offline"}</StatusPill></span> : null}
+              {repositorySelected ? <span className="hidden md:block"><StatusPill ready={graphReady}>{graphReady ? "Graph indexed" : meta?.serviceReady ? "Graph not indexed" : "Graph offline"}</StatusPill></span> : null}
               {repositorySelected && view !== "request" ? (
                 <Link href="/app/new" className={`${buttonBase} gap-2 bg-foreground px-3.5 text-panel hover:bg-[#2a3540] ${focusRing}`}>
                   <Plus size={15} weight="bold" /> <span className="sm:hidden">New</span><span className="hidden sm:inline">New preflight</span>
@@ -1491,7 +1497,7 @@ function WelcomeView({
             </p>
             <p className="inline-flex items-center gap-2">
               <span className={`h-1.5 w-1.5 rounded-full ${graphReady ? "bg-[#2f9e68]" : "bg-accent"}`} />
-              {graphReady ? `Graph ready · ${fmt(meta?.files ?? 0)} searchable files` : meta?.serviceReady ? "Active repository needs indexing" : "Start HydraDB to index"}
+              {graphReady ? `Graph indexed · ${fmt(meta?.files ?? 0)} searchable files` : meta?.serviceReady ? "Active repository needs indexing" : "Start HydraDB to index"}
             </p>
           </div>
         </section>
@@ -1568,6 +1574,7 @@ function OverviewView({
 }) {
   const mcpEvents = events.filter((event) => event.source === "mcp");
   const activeRepository = repositories.find((repository) => repository.active);
+  const isSampleRepository = Boolean(meta?.sample || activeRepository?.source === "sample");
   const setupProgress = [Boolean(meta?.files), runs.length > 0, mcpEvents.length > 0];
 
   return (
@@ -1575,22 +1582,26 @@ function OverviewView({
       <header className="dashboard-intro relative min-h-[9rem] overflow-hidden pr-0 sm:pr-56">
         <p className="text-sm text-muted">Active repository · {sourceName(meta)}</p>
         <h1 className="mt-3 max-w-3xl text-[2.1rem] font-semibold leading-[1.08] tracking-[-0.045em] sm:text-[2.65rem]">
-          {graphReady ? "Your codebase is ready for agent context." : "Your files are visible. The graph still needs indexing."}
+          {graphReady ? "Your codebase graph is indexed." : "Your files are visible. The graph still needs indexing."}
         </h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-muted">
-          {graphReady ? "Lumos can now prove the smallest useful context before an agent edits." : "Browse the source now, then index this repository into HydraDB before running a preflight."}
+          {graphReady
+            ? meta?.testFiles === 0
+              ? "Symbols and relationships are available. No test files were detected, so connected-test suggestions will stay empty until tests are added."
+              : "Lumos can now prove the smallest useful context and suggest connected tests before an agent edits."
+            : "Browse the source now, then index this repository into HydraDB before running a preflight."}
         </p>
-        <Image src="/assets/lumos-graph-core.png" alt="" width={448} height={448} className="dashboard-core-art" />
+        <Image src="/assets/lumos-graph-core-transparent.png" alt="" width={448} height={448} className="dashboard-core-art" />
       </header>
 
       <dl className="dashboard-metric-grid mt-7">
         <DashboardMetric icon={<Files size={21} />} value={fmt(meta?.files ?? 0)} label="Searchable files" detail={activeRepository?.source === "github" ? "Imported from GitHub" : sourceName(meta)} tone="blue" />
         <DashboardMetric icon={<ClockCounterClockwise size={21} />} value={fmt(runs.length)} label="Saved preflights" detail={runs.length ? "Evidence ready to reopen" : "Run your first preflight"} tone="green" />
         <DashboardMetric icon={<PlugsConnected size={21} />} value={fmt(mcpEvents.length)} label="Agent tool calls" detail={mcpEvents.length ? "Recorded through MCP" : "No agent connected yet"} tone="orange" />
-        <DashboardMetric icon={<Graph size={21} />} value={graphReady ? "Ready" : serviceReady ? "Not indexed" : "Offline"} label="HydraDB graph" detail={graphReady ? "Current repository indexed" : serviceReady ? "Index this repository" : "Start the graph service"} tone="violet" />
+        <DashboardMetric icon={<Graph size={21} />} value={graphReady ? "Indexed" : serviceReady ? "Not indexed" : "Offline"} label="HydraDB graph" detail={graphReady ? `${fmt(meta?.testFiles ?? 0)} test files detected` : serviceReady ? "Index this repository" : "Start the graph service"} tone="violet" />
       </dl>
 
-      <div className="mt-7 grid gap-6 xl:grid-cols-[minmax(19rem,0.72fr)_minmax(0,1.45fr)]">
+      {isSampleRepository ? <div className="mt-7 grid gap-6 xl:grid-cols-[minmax(19rem,0.72fr)_minmax(0,1.45fr)]">
         <section className="dashboard-card relative p-6 sm:p-7">
           <h2 className="text-base font-semibold">Get started</h2>
           <p className="mt-1 text-sm text-muted">Three steps from source to agent-ready proof.</p>
@@ -1633,7 +1644,7 @@ function OverviewView({
           </div>
           <div className="dashboard-tip mt-5"><span>Tip</span> Start with the demo to understand the loop, then switch to your repository.</div>
         </section>
-      </div>
+      </div> : null}
 
       <div className="mt-7 grid gap-6 xl:grid-cols-2">
         <section className="dashboard-card overflow-hidden">
@@ -1782,9 +1793,9 @@ function LiveRunView({
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.1em] text-muted">Tests to run</p>
-              <ul className="mt-2 divide-y divide-[#c7deeb] border-y border-[#c7deeb]">
-                {contract?.tests.slice(0, 4).map((test) => <li key={test.symbol} className="break-all py-2.5 font-mono text-[10px] leading-5">{test.symbol}</li>)}
-              </ul>
+              {contract?.tests.length ? <ul className="mt-2 divide-y divide-[#c7deeb] border-y border-[#c7deeb]">
+                {contract.tests.slice(0, 4).map((test) => <li key={test.symbol} className="break-all py-2.5 font-mono text-[10px] leading-5">{test.symbol}</li>)}
+              </ul> : <p className="mt-2 text-sm leading-6 text-muted">{retrieve.quality.testFilesDetected === 0 ? "No test files were detected in this repository." : "No connected tests were found for this change."}</p>}
             </div>
           </div>
           <div className="mt-5 flex items-start gap-3 border-t border-[#c7deeb] pt-4">
@@ -2388,11 +2399,41 @@ function RequestView({
   onDemo: () => void;
   onProof: () => void;
 }) {
-  const examples = [
+  const [repositoryExampleState, setRepositoryExampleState] = useState<{
+    repo: string;
+    examples: { label: string; value: string }[];
+  }>({ repo: "", examples: [] });
+
+  useEffect(() => {
+    if (!graphReady || !meta?.repo || meta.sample) {
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(`${API}/symbols?limit=3`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return [];
+        const body = (await response.json()) as { symbols?: { qualname: string; path: string }[] };
+        return (body.symbols ?? []).map((symbol) => ({
+          label: symbol.qualname.split(".").at(-1) ?? symbol.qualname,
+          value: `Update \`${symbol.qualname}\` and verify the behavior connected to ${symbol.path}.`,
+        }));
+      })
+      .then((examples) => setRepositoryExampleState({ repo: meta.repo, examples }))
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setRepositoryExampleState({ repo: meta.repo, examples: [] });
+        }
+      });
+    return () => controller.abort();
+  }, [graphReady, meta?.repo, meta?.sample]);
+
+  const demoExamples = [
     { label: "Template bug", value: SAMPLE_ISSUE },
     { label: "Rate limiting", value: "Add rate limiting to the payment endpoint and update its tests." },
     { label: "Validation error", value: "A ValueError escapes from URL validation instead of returning ValidationError." },
   ];
+  const repositoryExamples = repositoryExampleState.repo === meta?.repo ? repositoryExampleState.examples : [];
+  const examples = meta?.sample ? demoExamples : repositoryExamples;
 
   return (
     <div className="mx-auto min-h-full w-full max-w-[860px] px-5 py-10 sm:px-8 lg:py-14">
@@ -2400,7 +2441,7 @@ function RequestView({
         <h1 className="text-3xl font-semibold tracking-[-0.035em]">What should the agent change?</h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-muted">Lumos checks all {fmt(meta?.files ?? 0)} indexed files and returns the smallest plan it can prove.</p>
 
-        <div className="mt-6 flex flex-wrap gap-2" aria-label="Example requests">
+        {examples.length > 0 ? <div className="mt-6 flex flex-wrap gap-2" aria-label={meta?.sample ? "Demo requests" : "Requests using repository symbols"}>
           {examples.map((example) => (
             <button
               key={example.label}
@@ -2414,7 +2455,9 @@ function RequestView({
               {example.label}
             </button>
           ))}
-        </div>
+        </div> : null}
+
+        {graphReady && meta?.testFiles === 0 ? <p className="mt-4 rounded-lg border border-[#efcfaa] bg-[#fff9f2] px-4 py-3 text-sm leading-6 text-[#8b4b24]">No test files were detected in this repository. Lumos can still trace symbols and code relationships, but connected-test suggestions will remain empty.</p> : null}
 
         <form
           className="mt-4 rounded-xl border border-[#b9cbd5] bg-panel p-3 shadow-[0_10px_30px_rgb(18_40_54_/_0.06)] sm:p-4"
@@ -2438,7 +2481,7 @@ function RequestView({
             rows={7}
             aria-invalid={requestError ? true : undefined}
             aria-describedby={requestError ? "request-error" : "request-help"}
-            placeholder="Example: The join template filter escapes its separator when autoescape is off."
+            placeholder={meta?.sample ? "Example: The join template filter escapes its separator when autoescape is off." : "Describe the change and name a repository function, class, file, or stack trace when possible."}
             className={`min-h-52 w-full resize-y rounded-lg border bg-background px-4 py-4 text-sm leading-7 text-foreground placeholder:text-muted/70 hover:border-[#9cc5dc] ${requestError ? "border-accent" : "border-line"} ${focusRing}`}
           />
           {requestError ? <p id="request-error" role="alert" className="px-1 pt-2 text-sm leading-6 text-accent">{requestError}</p> : <p id="request-help" className="px-1 pt-2 text-xs leading-5 text-muted">A useful request names the behavior, error, feature, function, or stack trace involved.</p>}
@@ -2462,7 +2505,8 @@ function RequestView({
         ) : null}
         <div className="mt-8 flex flex-wrap gap-x-6 gap-y-2 border-t border-line pt-5 text-xs text-muted">
           <span>{fmt(meta?.files ?? 0)} files searched</span>
-          <span>HydraDB {graphReady ? "ready" : "offline"}</span>
+          <span>HydraDB {graphReady ? "indexed" : "offline"}</span>
+          <span>{fmt(meta?.testFiles ?? 0)} test files detected</span>
           <span>No AI API key</span>
         </div>
       </section>

@@ -8,12 +8,13 @@ export { resolvePath, resolveSeeds } from "./seeds.ts";
 export type { Resolution, ResolveOptions, Seed, SymbolHit } from "./seeds.ts";
 export { impact } from "./impact.ts";
 export type { ImpactHit, ImpactEdge, ImpactResult } from "./impact.ts";
-export { hasExplicitPromotionSeed, retrieve, LEXICAL_SEED_COUNT } from "./retrieve.ts";
+export { hasExplicitPromotionSeed, retrievalProof, retrieve, FILE_EDGES, LEXICAL_SEED_COUNT } from "./retrieve.ts";
 export type {
   Evidence,
   RankedFile,
   RetrieveOptions,
   RetrieveResult,
+  RetrievalProofMode,
   TestHit,
   TraversalReport,
 } from "./retrieve.ts";

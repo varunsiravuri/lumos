@@ -2501,13 +2501,6 @@ body {
   text-align: center;
 }
 
-.dashboard-intro {
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at 92% 38%, rgb(111 190 232 / 0.13), transparent 25%),
-    linear-gradient(120deg, rgb(255 255 255 / 0.42), transparent 68%);
-}
-
 .dashboard-core-art {
   display: none;
   position: absolute;
@@ -2515,10 +2508,9 @@ body {
   top: 50%;
   width: 14rem;
   height: 14rem;
-  object-fit: cover;
+  object-fit: contain;
   transform: translateY(-50%);
   opacity: 0.96;
-  mix-blend-mode: multiply;
   pointer-events: none;
 }
 

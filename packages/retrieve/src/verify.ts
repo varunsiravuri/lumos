@@ -28,6 +28,7 @@ export interface VerifyPatchInput {
   ranked: readonly RankedFile[];
   tests: readonly TestHit[];
   graphVerified: boolean;
+  testFilesDetected?: number;
 }
 
 function normalize(value: string): string {
@@ -100,7 +101,9 @@ export function verifyPatch(input: VerifyPatchInput): PatchVerification {
       title: "A connected test was reported",
       state: relevantTests.length === 0 ? "review" : matchedTests.length > 0 ? "pass" : "review",
       detail: relevantTests.length === 0
-        ? "The graph found no connected test, so this change needs manual test selection."
+        ? input.testFilesDetected === 0
+          ? "This repository has no detected test files, so Lumos cannot suggest a connected test. Add or select a test manually."
+          : "The graph found no connected test for this change, so it needs manual test selection."
         : matchedTests.length > 0
           ? `${matchedTests[0]} matches the graph-backed test impact.`
           : `No reported test matches the connected test set. Start with ${relevantTests[0]!.qualname}.`,
@@ -110,7 +113,7 @@ export function verifyPatch(input: VerifyPatchInput): PatchVerification {
       title: "Preflight contains graph evidence",
       state: input.graphVerified ? "pass" : "review",
       detail: input.graphVerified
-        ? "The recommendation is backed by a HydraDB relationship path."
+        ? "The recommendation is backed by a HydraDB symbol or relationship path."
         : "This run contains text matches only; Lumos cannot strongly verify the patch scope.",
     },
   ];

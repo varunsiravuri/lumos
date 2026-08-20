@@ -32,11 +32,13 @@ test("public workspace metadata omits server paths and reports graph readiness",
     files: 12,
     graphFiles: 0,
     graphSymbols: 0,
+    testFiles: 0,
     serviceReady: true,
   });
   assert.equal("root" in visible, false);
   assert.equal(visible.status, "unindexed");
   assert.equal(visible.graphReady, false);
+  assert.equal(visible.testFiles, 0);
 });
 
 test("import errors are stable and do not expose command details", () => {
