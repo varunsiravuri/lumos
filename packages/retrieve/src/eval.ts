@@ -238,6 +238,7 @@ for (const [position, instance] of instances.entries()) {
     result = await retrieve(client, corpus.index, instance.problem, {
       repo: slug,
       files: corpus.files,
+      testFiles: corpus.testFiles,
       limit: DEPTH,
       lexicalSeedCount: 0,
     });

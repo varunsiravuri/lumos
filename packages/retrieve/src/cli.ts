@@ -44,6 +44,7 @@ const indexed = Date.now();
 const result = await retrieve(client, corpus.index, issue, {
   repo: values.repo,
   files: corpus.files,
+  testFiles: corpus.testFiles,
   limit: Number(values.limit),
 });
 

@@ -236,6 +236,7 @@ async function cmdPreflight(): Promise<void> {
   const result = await retrieve(client, corpus.index, issue, {
     repo,
     files: corpus.files,
+    testFiles: corpus.testFiles,
     limit: Number(flag("--limit", "12")),
   });
 
@@ -272,6 +273,7 @@ async function cmdVerify(): Promise<void> {
   const result = await retrieve(client, corpus.index, issue, {
     repo,
     files: corpus.files,
+    testFiles: corpus.testFiles,
     limit: Number(flag("--limit", "12")),
   });
   const verification = verifyPatch({

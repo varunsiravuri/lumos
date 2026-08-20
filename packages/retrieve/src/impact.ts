@@ -38,7 +38,12 @@ async function resolveSymbol(
   client: HydraClient,
   repo: string,
   query: string,
+  eligible?: Set<string>,
 ): Promise<{ qualname: string; path: string; kind: string } | null> {
+  const choose = (rows: Awaited<ReturnType<HydraClient["query"]>>["rows"]) => {
+    const scoped = eligible ? rows.filter((row) => eligible.has(String(row.path ?? ""))) : rows;
+    return scoped.find((row) => !String(row.path ?? "").includes("/tests/")) ?? scoped[0];
+  };
   const asUkey = query.includes("#") ? query : ukey.symbol(repo, query);
 
   const exact = await client.query(
@@ -46,7 +51,7 @@ async function resolveSymbol(
       `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT 1`,
     { parameters: { ukey: asUkey } },
   );
-  const hit = exact.rows[0];
+  const hit = choose(exact.rows);
   if (hit) {
     return {
       qualname: String(hit.qualname ?? ""),
@@ -55,13 +60,26 @@ async function resolveSymbol(
     };
   }
 
+  const byQualname = await client.query(
+    `MATCH (s:${Label.Symbol} {qualname: $qualname, repo: $repo}) ` +
+      `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT 64`,
+    { parameters: { qualname: query.replace(`${repo}#`, ""), repo } },
+  );
+  const qualified = choose(byQualname.rows);
+  if (qualified) {
+    return {
+      qualname: String(qualified.qualname ?? ""),
+      path: String(qualified.path ?? ""),
+      kind: String(qualified.kind ?? ""),
+    };
+  }
+
   const byName = await client.query(
     `MATCH (s:${Label.Symbol} {name: $name, repo: $repo}) ` +
-      `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT 8`,
+      `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT 64`,
     { parameters: { name: query, repo } },
   );
-  const production = byName.rows.find((row) => !String(row.path ?? "").includes("/tests/"));
-  const row = production ?? byName.rows[0];
+  const row = choose(byName.rows);
   if (!row) return null;
   return {
     qualname: String(row.qualname ?? ""),
@@ -82,9 +100,10 @@ function toHit(node: ReachedNode): ImpactHit {
 
 export async function impact(
   client: HydraClient,
-  options: { repo: string; symbol: string; maxHops?: number },
+  options: { repo: string; symbol: string; maxHops?: number; files?: readonly string[] },
 ): Promise<ImpactResult | null> {
-  const seed = await resolveSymbol(client, options.repo, options.symbol);
+  const eligible = options.files ? new Set(options.files) : undefined;
+  const seed = await resolveSymbol(client, options.repo, options.symbol, eligible);
   if (!seed) return null;
 
   const started = Date.now();
@@ -104,6 +123,9 @@ export async function impact(
     .filter((node) => node.labels.includes(Label.Symbol))
     .map(toHit)
     .filter((hit) => hit.qualname.length > 0);
+  if (!hits.some((hit) => hit.qualname === seed.qualname && hit.path === seed.path)) {
+    hits.unshift({ ...seed, isTest: false, depth: 0 });
+  }
 
   const edgeKeys = new Set<string>();
   const edges: ImpactEdge[] = [];

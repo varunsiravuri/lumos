@@ -13,7 +13,7 @@ import * as ts from "typescript";
 const SKIP_DIRS = new Set([
   ".git", ".hg", ".svn", ".tox", ".nox", ".venv", "venv", "env",
   "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-  "build", "dist", ".eggs", "site-packages", ".next", "coverage", ".turbo",
+  "build", "dist", ".eggs", "site-packages", ".next", "coverage", ".turbo", "data",
 ]);
 
 const SOURCE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);

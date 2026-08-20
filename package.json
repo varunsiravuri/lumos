@@ -28,6 +28,7 @@
     "web": "pnpm --filter web dev",
     "swebench": "python3 tools/swebench_fetch.py",
     "eval": "node --no-warnings --import tsx --env-file-if-exists=.env packages/retrieve/src/eval.ts",
+    "test": "node --no-warnings --import tsx --test packages/retrieve/src/*.test.ts packages/serve/src/*.test.ts",
     "typecheck": "tsc --build"
   },
   "devDependencies": {

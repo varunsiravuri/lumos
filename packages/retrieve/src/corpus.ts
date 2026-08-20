@@ -15,6 +15,10 @@ const SKIP_DIRS = new Set([
   ".git", ".hg", ".svn", ".tox", ".nox", ".venv", "venv", "env",
   "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
   "build", "dist", ".eggs", "site-packages", ".next", "coverage", ".turbo",
+  // Lumos keeps imported repositories, extraction output, and run history
+  // below this directory. Walking it would mix other workspaces into the
+  // repository that hosts Lumos itself.
+  "data",
 ]);
 
 /** Beyond this a file is generated data, a vendored blob or a fixture dump. */
@@ -99,11 +103,14 @@ export function listRepoFiles(root: string, options: ListOptions = {}): string[]
 
 export interface Corpus {
   files: string[];
+  testFiles: string[];
   index: Bm25Index;
 }
 
 export function buildCorpus(root: string, options: ListOptions = {}): Corpus {
-  const files = listRepoFiles(root, options);
+  const allFiles = listRepoFiles(root, { includeTests: true });
+  const testFiles = allFiles.filter(isTestPath);
+  const files = options.includeTests ? allFiles : allFiles.filter((path) => !isTestPath(path));
   const index = new Bm25Index();
 
   for (const path of files) {
@@ -117,5 +124,5 @@ export function buildCorpus(root: string, options: ListOptions = {}): Corpus {
     index.add(path, contents);
   }
 
-  return { files, index };
+  return { files, testFiles, index };
 }

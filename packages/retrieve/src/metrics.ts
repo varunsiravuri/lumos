@@ -74,7 +74,9 @@ export function summarizeEval(outcomes: EvalOutcome[]): EvalSummary {
     helped,
     hurt,
     failureMode:
-      "When hybrid loses, the usual cause is a bad seed (the issue never names the patched symbol), dynamic dispatch the extractor cannot resolve, or a missing test-coverage edge.",
+      hurt.length === 0
+        ? "Graph promotion is guarded by explicit quoted identifiers and a unique covering-test path; otherwise Lumos keeps the lexical order."
+        : "When hybrid loses, the usual cause is a bad seed, dynamic dispatch the extractor cannot resolve, or a missing test-coverage edge.",
   };
 }
 

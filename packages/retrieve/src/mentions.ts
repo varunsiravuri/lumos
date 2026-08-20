@@ -217,6 +217,24 @@ export function extractMentions(issue: string): Mention[] {
 }
 
 /**
+ * Identifiers the reporter deliberately marked as code with backticks.
+ *
+ * This signal stays separate from `Mention.source`: the same identifier may
+ * also appear in a fenced example, whose higher numeric weight would otherwise
+ * erase the fact that the reporter explicitly singled it out in prose.
+ */
+export function explicitQuotedIdentifiers(issue: string): Set<string> {
+  const identifiers = new Set<string>();
+  scan(BACKTICK, issue, ([, inner]) => {
+    const value = inner?.trim() ?? "";
+    if (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(value) && value.length >= 3 && !isNoise(value)) {
+      identifiers.add(value);
+    }
+  });
+  return identifiers;
+}
+
+/**
  * Prose is allowed when the token is distinctive. `set_cookie` in a sentence
  * is a seed. `Model` in a sentence is a hub and is not.
  */

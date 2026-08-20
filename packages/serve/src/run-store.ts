@@ -41,6 +41,7 @@ export interface LumosEvent {
   summary: string;
   elapsedMs?: number;
   runId?: string;
+  repo?: string;
 }
 
 function ensureParent(path: string): void {
@@ -74,8 +75,12 @@ export function getRun(id: string): StoredRun | null {
   return lines<StoredRun>(RUNS_PATH).findLast((run) => run.id === id) ?? null;
 }
 
-export function listRuns(limit = 30): StoredRun[] {
-  return lines<StoredRun>(RUNS_PATH).slice(-limit).reverse();
+export function scopeRuns(runs: StoredRun[], repo?: string): StoredRun[] {
+  return repo ? runs.filter((run) => run.repo === repo) : runs;
+}
+
+export function listRuns(limit = 30, repo?: string): StoredRun[] {
+  return scopeRuns(lines<StoredRun>(RUNS_PATH), repo).slice(-limit).reverse();
 }
 
 export function appendEvent(event: Omit<LumosEvent, "id" | "at"> & Partial<Pick<LumosEvent, "id" | "at">>): LumosEvent {
@@ -89,6 +94,14 @@ export function appendEvent(event: Omit<LumosEvent, "id" | "at"> & Partial<Pick<
   return stored;
 }
 
-export function listEvents(limit = 50): LumosEvent[] {
-  return lines<LumosEvent>(EVENTS_PATH).slice(-limit).reverse();
+export function scopeEvents(events: LumosEvent[], repo: string | undefined, runs: StoredRun[]): LumosEvent[] {
+  if (!repo) return events;
+  const runRepos = new Map(runs.map((run) => [run.id, run.repo]));
+  return events.filter((event) => event.repo === repo || (event.runId ? runRepos.get(event.runId) === repo : false));
+}
+
+export function listEvents(limit = 50, repo?: string): LumosEvent[] {
+  const events = lines<LumosEvent>(EVENTS_PATH);
+  const runs = repo ? lines<StoredRun>(RUNS_PATH) : [];
+  return scopeEvents(events, repo, runs).slice(-limit).reverse();
 }

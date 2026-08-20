@@ -36,7 +36,7 @@ BUILTIN_NAMES = frozenset(dir(builtins))
 SKIP_DIRS = {
     ".git", ".hg", ".svn", ".tox", ".nox", ".venv", "venv", "env",
     "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-    "build", "dist", ".eggs", "site-packages",
+    "build", "dist", ".eggs", "site-packages", ".next", "coverage", ".turbo", "data",
 }
 
 

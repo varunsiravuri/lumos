@@ -25,7 +25,7 @@ import { closure, Edge, Label, UKEY_PROPERTY } from "@lumos/graph";
 import type { GraphPath } from "@lumos/graph";
 
 import { Bm25Index } from "./bm25.ts";
-import { extractMentions, isSeedableMention, type Mention } from "./mentions.ts";
+import { explicitQuotedIdentifiers, extractMentions, isSeedableMention, type Mention } from "./mentions.ts";
 import { resolveSeeds, type Seed } from "./seeds.ts";
 
 /** Relationship groups walked from each kind of seed, with how much each is trusted. */
@@ -89,6 +89,8 @@ export interface RetrieveOptions {
   repo: string;
   /** Files eligible to be returned, which is also the BM25 corpus. */
   files: readonly string[];
+  /** Current test paths allowed to contribute coverage evidence. */
+  testFiles?: readonly string[];
   /**
    * Files seeded from the lexical ranking, in addition to files named outright.
    * Daily preflight uses the top BM25 hits so short prompts still walk HydraDB.
@@ -119,6 +121,11 @@ export const LEXICAL_SEED_COUNT = 8;
  * wins every query regardless of the question.
  */
 const CORROBORATION = 0.6;
+
+export function hasExplicitPromotionSeed(issue: string, seedVias: Iterable<string>): boolean {
+  const explicitlyNamed = explicitQuotedIdentifiers(issue);
+  return [...seedVias].some((via) => explicitlyNamed.has(via));
+}
 
 interface FileScore {
   lexical: number;
@@ -245,6 +252,7 @@ export async function retrieve(
   const {
     repo,
     files,
+    testFiles,
     lexicalSeedCount = LEXICAL_SEED_COUNT,
     maxSymbolHops = 1,
     maxFileHops = 1,
@@ -253,6 +261,7 @@ export async function retrieve(
   } = options;
 
   const eligible = new Set(files);
+  const eligibleTests = testFiles ? new Set(testFiles) : null;
   const scores = new Map<string, FileScore>();
 
   const lexical = index.search(issue, 200);
@@ -342,7 +351,12 @@ export async function retrieve(
       const isTest = node.properties.is_test === true || node.properties.is_test === "true";
       const qualname = String(node.properties.qualname ?? "");
       const filePath = String(node.properties.path ?? "");
-      if (!isTest || !qualname || seenTests.has(qualname)) continue;
+      if (
+        !isTest ||
+        !qualname ||
+        seenTests.has(qualname) ||
+        (eligibleTests && !eligibleTests.has(filePath))
+      ) continue;
       seenTests.add(qualname);
       tests.push({ path: filePath, qualname, depth, via: seed?.via ?? "" });
     }
@@ -424,13 +438,14 @@ export async function retrieve(
     const source = combined.find((row) => row.path === file.path);
     if (!source) return false;
     const vias = new Set(seedVias(source.entry.evidence));
-    return tests.some((test) => vias.has(test.via));
+    return hasExplicitPromotionSeed(issue, vias) && tests.some((test) => vias.has(test.via));
   });
 
-  // A named symbol alone is not enough to reorder a strong lexical result.
-  // Promotion requires a single candidate whose seed also reaches covering
-  // tests. When that corroboration is absent, keep BM25's order and attach the
-  // graph evidence without pretending it is decisive.
+  // A resolved name alone is not enough to reorder a strong lexical result.
+  // Promotion requires one candidate whose seed the reporter explicitly
+  // marked as code and whose path also reaches covering tests. The stricter
+  // gate preserves BM25 when prose/code-block extraction guesses the wrong
+  // seed while retaining the measured `join` disagreement case.
   const promote = covered.length === 1 ? covered[0] : undefined;
 
   const hybrid: RankedFile[] = lexicalRanked.map((file) => ({ ...file, why: [...file.why] }));

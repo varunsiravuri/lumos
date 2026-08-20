@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { HydraClient, Label } from "@lumos/graph";
 import {
   buildCorpus,
+  explicitQuotedIdentifiers,
   impact,
   retrieve,
   summarizeEval,
@@ -34,17 +35,26 @@ import {
   saveRun,
   type RunTraceStep,
 } from "./run-store.ts";
+import {
+  githubRepository,
+  publicImportError,
+  publicServerError,
+  publicWorkspace,
+} from "./http-helpers.ts";
 import { WorkspaceStore, workspaceLabel, type WorkspaceRecord } from "./workspace-store.ts";
 
 const PORT = Number(process.env.LUMOS_API_PORT ?? 8787);
 const DEFAULT_REPO = process.env.LUMOS_REPO ?? "django/django";
 const DEFAULT_ROOT = resolve(process.env.LUMOS_ROOT ?? "data/repos/django");
+const DEMO_REPO = "django/django";
+const DEMO_ROOT = resolve("data/repos/django");
 const KILLER_ID = "django__django-16873";
 const LITE_PATH = "data/swebench/lite.jsonl";
 const EVAL_SUMMARY = "data/eval/summary.json";
 const EVAL_RESULTS = "data/eval/django-hybrid.jsonl";
 const IMPORT_ROOT = resolve(process.env.LUMOS_IMPORT_ROOT ?? "data/repos/imports");
 const WORKSPACE_STORE = process.env.LUMOS_WORKSPACE_STORE ?? "data/workspaces.json";
+const LOCAL_CONFIG_WRITES = process.env.LUMOS_LOCAL_UI === "1";
 const execFileAsync = promisify(execFile);
 
 const WITHOUT_HYDRA = [
@@ -56,7 +66,10 @@ const WITHOUT_HYDRA = [
 
 const client = new HydraClient();
 const corpusByRoot = new Map<string, Corpus>();
-let corpusError: string | null = null;
+const graphStatsByRepo = new Map<string, { at: number; files: number; symbols: number }>();
+const pendingGraphStats = new Map<string, Promise<{ files: number; symbols: number }>>();
+let benchmarkIssues: Map<string, string> | null = null;
+const GRAPH_PROBE_BATCH = 8;
 
 const now = new Date().toISOString();
 const workspaces = new WorkspaceStore(WORKSPACE_STORE, {
@@ -69,6 +82,19 @@ const workspaces = new WorkspaceStore(WORKSPACE_STORE, {
   addedAt: now,
   updatedAt: now,
 });
+
+if (existsSync(DEMO_ROOT) && !workspaces.get(DEMO_REPO)) {
+  workspaces.upsert({
+    slug: DEMO_REPO,
+    label: workspaceLabel(DEMO_REPO),
+    root: DEMO_ROOT,
+    source: "sample",
+    status: "ready",
+    files: 0,
+    addedAt: now,
+    updatedAt: now,
+  });
+}
 
 type ImportStatus = "queued" | "cloning" | "indexing" | "ready" | "error";
 interface ImportJob {
@@ -108,14 +134,108 @@ function loadCorpus(workspace = workspaces.active()): Corpus {
   return loaded;
 }
 
-function githubRepository(value: string): { slug: string; url: string } | null {
-  const trimmed = value.trim().replace(/\/$/, "").replace(/\.git$/, "");
-  const shorthand = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
-  const full = trimmed.match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i);
-  const match = full ?? shorthand;
-  if (!match?.[1] || !match[2]) return null;
-  const slug = `${match[1]}/${match[2]}`;
-  return { slug, url: `https://github.com/${slug}.git` };
+function workspaceFiles(workspace: WorkspaceRecord): number {
+  if (!existsSync(workspace.root)) return 0;
+  const files = loadCorpus(workspace).files.length;
+  if (workspace.files !== files) {
+    workspaces.upsert({ ...workspace, files, updatedAt: new Date().toISOString() });
+  }
+  return files;
+}
+
+async function hasCurrentFileNode(repo: string, paths: string[]): Promise<boolean> {
+  for (let offset = 0; offset < paths.length; offset += GRAPH_PROBE_BATCH) {
+    const results = await Promise.all(
+      paths.slice(offset, offset + GRAPH_PROBE_BATCH).map((path) =>
+        client.query(
+          `MATCH (n:${Label.File} {repo: $repo, path: $path}) RETURN n.id AS id LIMIT 1`,
+          { parameters: { repo, path } },
+        ),
+      ),
+    );
+    if (results.some((result) => result.rows.length > 0)) return true;
+  }
+  return false;
+}
+
+async function currentSymbolRows(
+  repo: string,
+  paths: string[],
+  limit: number,
+  name?: { value: string; prefix: boolean },
+) {
+  const rows: Awaited<ReturnType<HydraClient["query"]>>["rows"] = [];
+  for (let offset = 0; offset < paths.length && rows.length < limit; offset += GRAPH_PROBE_BATCH) {
+    const remaining = limit - rows.length;
+    const results = await Promise.all(
+      paths.slice(offset, offset + GRAPH_PROBE_BATCH).map((path) => {
+        const parameters = name ? { repo, path, name: name.value } : { repo, path };
+        const query = name?.prefix
+          ? `MATCH (s:${Label.Symbol} {repo: $repo, path: $path}) WHERE s.name STARTS WITH $name ` +
+            `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT ${remaining}`
+          : name
+            ? `MATCH (s:${Label.Symbol} {repo: $repo, path: $path, name: $name}) ` +
+              `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT ${remaining}`
+            : `MATCH (s:${Label.Symbol} {repo: $repo, path: $path}) ` +
+              `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT ${remaining}`;
+        return client.query(query, { parameters });
+      }),
+    );
+    for (const result of results) {
+      rows.push(...result.rows.slice(0, limit - rows.length));
+      if (rows.length >= limit) break;
+    }
+  }
+  return rows;
+}
+
+async function graphStats(repo: string, serviceReady = true): Promise<{ files: number; symbols: number }> {
+  if (!serviceReady) return { files: 0, symbols: 0 };
+  const cached = graphStatsByRepo.get(repo);
+  if (cached && Date.now() - cached.at < 60_000) return cached;
+  const pending = pendingGraphStats.get(repo);
+  if (pending) return pending;
+  const request = (async () => {
+    try {
+      const workspace = workspaces.get(repo);
+      if (!workspace || !existsSync(workspace.root)) return { files: 0, symbols: 0 };
+      const paths = loadCorpus(workspace).files.slice(0, 1_024);
+      if (paths.length === 0) return { files: 0, symbols: 0 };
+      // HydraDB currently lacks aggregate count() and read-side list joins.
+      // Probe scalar corpus paths so an older index cannot make a missing
+      // checkout snapshot appear ready.
+      const graphReady = await hasCurrentFileNode(repo, paths);
+      const symbols = graphReady ? (await currentSymbolRows(repo, paths, 64)).length : 0;
+      const stats = {
+        at: Date.now(),
+        files: graphReady ? paths.length : 0,
+        symbols,
+      };
+      graphStatsByRepo.set(repo, stats);
+      return stats;
+    } catch (error) {
+      console.error(`[graph-stats] ${repo}`, error);
+      return { files: 0, symbols: 0 };
+    }
+  })();
+  pendingGraphStats.set(repo, request);
+  try {
+    return await request;
+  } finally {
+    pendingGraphStats.delete(repo);
+  }
+}
+
+async function workspaceResponse(record: WorkspaceRecord, active: string, serviceReady: boolean) {
+  const files = workspaceFiles(record);
+  const graph = await graphStats(record.slug, serviceReady);
+  return publicWorkspace(record, {
+    active: record.slug === active,
+    files,
+    graphFiles: graph.files,
+    graphSymbols: graph.symbols,
+    serviceReady,
+  });
 }
 
 function updateImportJob(id: string, update: Partial<ImportJob>): ImportJob {
@@ -184,6 +304,7 @@ async function runImport(job: ImportJob): Promise<void> {
     );
 
     corpusByRoot.delete(resolve(destination));
+    graphStatsByRepo.delete(job.slug);
     const files = loadCorpus({ ...workspaces.get(job.slug)!, root: destination }).files.length;
     workspaces.upsert({
       slug: job.slug,
@@ -203,9 +324,11 @@ async function runImport(job: ImportJob): Promise<void> {
       tool: "lumos.import_repository",
       state: "complete",
       summary: `${job.slug}: ${files.toLocaleString("en-US")} files indexed`,
+      repo: job.slug,
     });
   } catch (reason) {
-    const message = reason instanceof Error ? reason.message.split("\n")[0] ?? reason.message : "Repository import failed";
+    console.error(`[import:${job.id}] ${job.slug}`, reason);
+    const message = publicImportError();
     updateImportJob(job.id, { status: "error", message: "Repository import failed", error: message });
     workspaces.upsert({
       slug: job.slug,
@@ -227,40 +350,58 @@ function loadKiller(): {
   issue: string;
   gold: string[];
   note: string;
+  repository: string;
+  files: number;
 } | null {
   if (!existsSync(LITE_PATH)) return null;
   for (const line of readFileSync(LITE_PATH, "utf8").split("\n")) {
     if (!line) continue;
     const row = JSON.parse(line) as { instance_id: string; problem: string; gold_files: string[] };
     if (row.instance_id !== KILLER_ID) continue;
+    const measured = loadEvalOutcomes().find((outcome) => outcome.instanceId === row.instance_id);
     return {
       id: row.instance_id,
       issue: row.problem,
       gold: row.gold_files,
       note: "Word search ranks defaultfilters.py third. Lumos seeds the quoted join filter, walks CALLS/COVERS, and puts the patched file first.",
+      repository: DEMO_REPO,
+      files: measured?.candidates ?? 865,
     };
   }
   return null;
 }
 
 function loadEval() {
-  if (existsSync(EVAL_SUMMARY)) {
-    return JSON.parse(readFileSync(EVAL_SUMMARY, "utf8")) as unknown;
-  }
-  if (!existsSync(EVAL_RESULTS)) return null;
-  const outcomes = readFileSync(EVAL_RESULTS, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as EvalOutcome);
-  return summarizeEval(outcomes);
+  const outcomes = loadEvalOutcomes();
+  if (outcomes.length > 0) return summarizeEval(outcomes);
+  if (existsSync(EVAL_SUMMARY)) return JSON.parse(readFileSync(EVAL_SUMMARY, "utf8")) as unknown;
+  return null;
 }
 
 function loadEvalOutcomes(): EvalOutcome[] {
   if (!existsSync(EVAL_RESULTS)) return [];
+  if (!benchmarkIssues) {
+    benchmarkIssues = new Map<string, string>();
+    if (existsSync(LITE_PATH)) {
+      for (const line of readFileSync(LITE_PATH, "utf8").split("\n")) {
+        if (!line) continue;
+        const row = JSON.parse(line) as { instance_id: string; problem: string };
+        benchmarkIssues.set(row.instance_id, row.problem);
+      }
+    }
+  }
   return readFileSync(EVAL_RESULTS, "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as EvalOutcome);
+    .map((line) => JSON.parse(line) as EvalOutcome)
+    .map((outcome) => {
+      const issue = benchmarkIssues?.get(outcome.instanceId) ?? "";
+      if (explicitQuotedIdentifiers(issue).size > 0) return outcome;
+      // Old benchmark artifacts may contain graph promotions inferred from
+      // prose. The production retriever now only promotes explicit quoted
+      // identifiers, so make legacy artifacts obey the same safety floor.
+      return { ...outcome, hybrid: outcome.bm25 };
+    });
 }
 
 function languageSummary(files: string[]): { language: string; files: number }[] {
@@ -300,28 +441,37 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && url.pathname === "/health") {
-      const ready = await client.ready();
-      json(res, ready ? 200 : 503, { ready, repo: workspaces.active().slug });
+      const serviceReady = await client.ready();
+      const active = workspaces.active();
+      const stats = await graphStats(active.slug, serviceReady);
+      json(res, serviceReady ? 200 : 503, {
+        ready: serviceReady && stats.files > 0,
+        serviceReady,
+        repo: active.slug,
+      });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/meta") {
-      const ready = await client.ready();
+      const serviceReady = await client.ready();
       const active = workspaces.active();
-      const files = ready && active.status === "ready" ? loadCorpus(active).files.length : active.files;
-      json(res, ready ? 200 : 503, {
-        ready,
+      const repository = await workspaceResponse(active, active.slug, serviceReady);
+      json(res, 200, {
+        ready: repository.graphReady,
+        serviceReady,
         repo: active.slug,
         label: active.label,
         sample: active.source === "sample",
         source: active.source,
-        root: active.root,
-        workspace: process.cwd(),
-        files,
+        status: repository.status,
+        files: repository.files,
+        graphFiles: repository.graphFiles,
+        graphSymbols: repository.graphSymbols,
+        graphSymbolsCapped: repository.graphSymbolsCapped,
         workspaces: workspaces.list().length,
         engine: "HydraDB algo.MSpaths",
         product: "Lumos preflight and verification for coding agents",
-        runs: listRuns(500).length,
+        runs: listRuns(500, active.slug).length,
         capabilities: ["preflight", "graph proof", "agent handoff", "patch guard"],
         mcpTools: [
           "lumos.preflight_change",
@@ -336,12 +486,12 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/repositories") {
       const active = workspaces.active();
+      const serviceReady = await client.ready();
       json(res, 200, {
         active: active.slug,
-        repositories: workspaces.list().map((record) => ({
-          ...record,
-          active: record.slug === active.slug,
-        })),
+        repositories: await Promise.all(
+          workspaces.list().map((record) => workspaceResponse(record, active.slug, serviceReady)),
+        ),
         imports: [...importJobs.values()].slice(-10).reverse(),
       });
       return;
@@ -353,12 +503,25 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: "slug is required" });
         return;
       }
+      const requested = workspaces.get(body.slug);
+      if (!requested || !existsSync(requested.root)) {
+        json(res, 409, { error: "repository files are not available on this Lumos server" });
+        return;
+      }
+      const serviceReady = await client.ready();
+      const stats = await graphStats(requested.slug, serviceReady);
+      if (!serviceReady || stats.files === 0) {
+        json(res, 409, { error: "repository has not been indexed into HydraDB yet" });
+        return;
+      }
       const active = workspaces.activate(body.slug);
       if (!active) {
         json(res, 409, { error: "repository is not ready to activate" });
         return;
       }
-      json(res, 200, { repository: active });
+      json(res, 200, {
+        repository: await workspaceResponse(active, active.slug, serviceReady),
+      });
       return;
     }
 
@@ -379,9 +542,15 @@ const server = createServer(async (req, res) => {
       }
       const existing = workspaces.get(parsed.slug);
       if (existing?.status === "ready" && existsSync(existing.root)) {
-        workspaces.activate(existing.slug);
-        json(res, 200, { repository: existing, reused: true });
-        return;
+        const stats = await graphStats(existing.slug);
+        if (stats.files > 0) {
+          workspaces.activate(existing.slug);
+          json(res, 200, {
+            repository: await workspaceResponse(existing, existing.slug, true),
+            reused: true,
+          });
+          return;
+        }
       }
       const startedAt = new Date().toISOString();
       const job: ImportJob = {
@@ -406,7 +575,12 @@ const server = createServer(async (req, res) => {
         json(res, 404, { error: "import job not found" });
         return;
       }
-      json(res, 200, { job, repository: workspaces.get(job.slug) });
+      const record = workspaces.get(job.slug);
+      const serviceReady = await client.ready();
+      json(res, 200, {
+        job,
+        repository: record ? await workspaceResponse(record, workspaces.active().slug, serviceReady) : null,
+      });
       return;
     }
 
@@ -452,8 +626,9 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/runs") {
       const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 30)));
+      const repo = url.searchParams.get("scope") === "all" ? undefined : workspaces.active().slug;
       json(res, 200, {
-        runs: listRuns(limit).map((run) => ({
+        runs: listRuns(limit, repo).map((run) => ({
           id: run.id,
           createdAt: run.createdAt,
           completedAt: run.completedAt,
@@ -480,23 +655,33 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/events") {
       const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 30)));
-      json(res, 200, { events: listEvents(limit) });
+      const repo = url.searchParams.get("scope") === "all" ? undefined : workspaces.active().slug;
+      json(res, 200, { events: listEvents(limit, repo) });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/connect") {
+      if (!LOCAL_CONFIG_WRITES) {
+        json(res, 403, {
+          error: "Browser setup cannot write files on your computer. Run `pnpm lumos connect /path/to/repository` locally.",
+        });
+        return;
+      }
       const body = JSON.parse((await readBody(req)) || "{}") as { targetRoot?: string };
       const home = lumosHome();
       const active = workspaces.active();
       const indexedRoot = absoluteRepoRoot(active.root, home);
       const fallback = active.source === "sample" ? home : indexedRoot;
-      const written = writeCursorConnect({
+      writeCursorConnect({
         targetRoot: body.targetRoot?.trim() || fallback,
         lumosHome: home,
         repo: active.slug,
         indexedRoot,
       });
-      json(res, 200, written);
+      json(res, 200, {
+        written: true,
+        files: [".cursor/mcp.json", ".cursor/rules/lumos.mdc"],
+      });
       return;
     }
 
@@ -532,16 +717,31 @@ const server = createServer(async (req, res) => {
         state: "complete",
         summary: `${verification.status}: ${verification.changedFiles.length} changed files, ${verification.matchedTests.length} connected tests`,
         runId: run.id,
+        repo: run.repo,
       });
       json(res, 200, { runId: run.id, verifiedAt: new Date().toISOString(), ...verification });
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/demo") {
+    if ((req.method === "GET" || req.method === "POST") && url.pathname === "/demo") {
       const demo = loadKiller();
       if (!demo) {
         json(res, 404, { error: "SWE-bench lite dataset not found" });
         return;
+      }
+      if (req.method === "POST") {
+        const workspace = workspaces.get(DEMO_REPO);
+        if (!workspace || !existsSync(workspace.root)) {
+          json(res, 409, { error: "The Django proof repository is not available on this Lumos server." });
+          return;
+        }
+        const serviceReady = await client.ready();
+        const stats = await graphStats(DEMO_REPO, serviceReady);
+        if (!serviceReady || stats.files === 0) {
+          json(res, 409, { error: "The Django proof graph is not indexed. Run the demo index before opening this case." });
+          return;
+        }
+        workspaces.activate(DEMO_REPO);
       }
       json(res, 200, demo);
       return;
@@ -573,7 +773,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (!(await client.ready())) {
+    const serviceReady = await client.ready();
+    if (!serviceReady) {
       json(res, 503, { error: "HydraDB is not ready. Run pnpm db:up." });
       return;
     }
@@ -581,25 +782,25 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/symbols") {
       const active = workspaces.active();
       const q = url.searchParams.get("q")?.trim() ?? "";
-      if (q.length < 2) {
-        json(res, 200, { symbols: [] });
+      const limit = Math.max(1, Math.min(24, Number(url.searchParams.get("limit") ?? 8)));
+      const stats = await graphStats(active.slug, serviceReady);
+      if (stats.files === 0) {
+        json(res, 409, { error: "The active repository has not been indexed into HydraDB." });
         return;
       }
-      const exact = await client.query(
-        `MATCH (s:${Label.Symbol} {name: $name, repo: $repo}) ` +
-          `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT 8`,
-        { parameters: { name: q, repo: active.slug } },
-      );
-      const prefixed =
-        exact.rows.length > 0
-          ? { rows: [] as typeof exact.rows }
-          : await client.query(
-              `MATCH (s:${Label.Symbol} {repo: $repo}) WHERE s.name STARTS WITH $q ` +
-                `RETURN s.qualname AS qualname, s.path AS path, s.kind AS kind LIMIT 12`,
-              { parameters: { repo: active.slug, q } },
-            );
-      const rows = exact.rows.length > 0 ? exact.rows : prefixed.rows;
+      const eligiblePaths = loadCorpus(active).files;
+      let rows: Awaited<ReturnType<HydraClient["query"]>>["rows"];
+      if (q.length >= 2) {
+        const exact = await currentSymbolRows(active.slug, eligiblePaths, limit, { value: q, prefix: false });
+        rows = exact.length > 0
+          ? exact
+          : await currentSymbolRows(active.slug, eligiblePaths, limit, { value: q, prefix: true });
+      } else {
+        rows = await currentSymbolRows(active.slug, eligiblePaths, limit);
+      }
+      rows = rows.slice(0, limit);
       json(res, 200, {
+        repo: active.slug,
         symbols: rows.map((row) => ({
           qualname: String(row.qualname ?? ""),
           path: String(row.path ?? ""),
@@ -611,6 +812,10 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/impact") {
       const active = workspaces.active();
+      if ((await graphStats(active.slug, serviceReady)).files === 0) {
+        json(res, 409, { error: "The active repository has not been indexed into HydraDB." });
+        return;
+      }
       const body = JSON.parse(await readBody(req)) as { symbol?: string; hops?: number };
       if (!body.symbol) {
         json(res, 400, { error: "symbol is required" });
@@ -620,6 +825,7 @@ const server = createServer(async (req, res) => {
         repo: active.slug,
         symbol: body.symbol,
         maxHops: body.hops ?? 4,
+        files: loadCorpus(active).files,
       });
       if (!result) {
         json(res, 404, { error: `no symbol matching ${JSON.stringify(body.symbol)}` });
@@ -631,6 +837,10 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/retrieve") {
       const active = workspaces.active();
+      if ((await graphStats(active.slug, serviceReady)).files === 0) {
+        json(res, 409, { error: "The active repository has not been indexed into HydraDB." });
+        return;
+      }
       const body = JSON.parse(await readBody(req)) as { issue?: string; limit?: number };
       if (!body.issue?.trim()) {
         json(res, 400, { error: "issue is required" });
@@ -652,6 +862,7 @@ const server = createServer(async (req, res) => {
       const result = await retrieve(client, loaded.index, request, {
         repo: active.slug,
         files: loaded.files,
+        testFiles: loaded.testFiles,
         limit: body.limit ?? 12,
       });
       const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
@@ -715,6 +926,7 @@ const server = createServer(async (req, res) => {
       const payload = {
         runId,
         createdAt: completedAt.toISOString(),
+        repo: active.slug,
         request,
         ranked: result.ranked,
         lexical: result.lexical,
@@ -748,6 +960,7 @@ const server = createServer(async (req, res) => {
         summary: `${loaded.files.length} checked → ${result.ranked.length} files, ${result.tests.length} tests`,
         elapsedMs,
         runId,
+        repo: active.slug,
       });
       json(res, 200, payload);
       return;
@@ -755,8 +968,8 @@ const server = createServer(async (req, res) => {
 
     json(res, 404, { error: "not found" });
   } catch (error) {
-    corpusError = String((error as Error).message);
-    json(res, 500, { error: corpusError });
+    console.error(`[http] ${req.method ?? "UNKNOWN"} ${req.url ?? "/"}`, error);
+    json(res, 500, { error: publicServerError() });
   }
 });
 

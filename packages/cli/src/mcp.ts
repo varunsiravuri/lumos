@@ -129,7 +129,7 @@ function logEvent(event: {
     mkdirSync(dirname(EVENTS_PATH), { recursive: true });
     appendFileSync(
       EVENTS_PATH,
-      `${JSON.stringify({ id: randomUUID(), at: new Date().toISOString(), source: "mcp", ...event })}\n`,
+      `${JSON.stringify({ id: randomUUID(), at: new Date().toISOString(), source: "mcp", repo: REPO, ...event })}\n`,
       "utf8",
     );
   } catch {
@@ -149,6 +149,7 @@ async function buildPreflight(issue: string, limit: number) {
   const result = await retrieve(client, loaded.index, issue, {
     repo: REPO,
     files: loaded.files,
+    testFiles: loaded.testFiles,
     limit,
   });
   const graphEvidenceFiles = result.ranked.filter((file) => file.evidence.length > 0).length;
@@ -258,6 +259,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     const result = await retrieve(client, loaded.index, issue, {
       repo: REPO,
       files: loaded.files,
+      testFiles: loaded.testFiles,
       limit: 50,
     });
     const hit = result.ranked.find((row) => row.path === file);

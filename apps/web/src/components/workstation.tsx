@@ -75,6 +75,7 @@ interface TestHit {
 interface RetrieveResult {
   runId: string;
   createdAt: string;
+  repo: string;
   request: string;
   ranked: RankedFile[];
   lexical: RankedFile[];
@@ -108,13 +109,16 @@ interface RetrieveResult {
 
 interface Meta {
   ready: boolean;
+  serviceReady: boolean;
   repo: string;
   label?: string;
   sample?: boolean;
   source?: "sample" | "github" | "local";
-  root: string;
-  workspace: string;
+  status: "ready" | "indexing" | "error" | "unindexed";
   files: number;
+  graphFiles: number;
+  graphSymbols: number;
+  graphSymbolsCapped: boolean;
   workspaces?: number;
   engine: string;
   runs: number;
@@ -184,10 +188,13 @@ interface EvalSummary {
 interface RepositoryRecord {
   slug: string;
   label: string;
-  root: string;
   source: "sample" | "github" | "local";
-  status: "ready" | "indexing" | "error";
+  status: "ready" | "indexing" | "error" | "unindexed";
   files: number;
+  graphFiles: number;
+  graphSymbols: number;
+  graphSymbolsCapped: boolean;
+  graphReady: boolean;
   addedAt: string;
   updatedAt: string;
   url?: string;
@@ -222,6 +229,8 @@ interface Demo {
   issue: string;
   gold: string[];
   note: string;
+  repository: string;
+  files: number;
 }
 
 interface ContextContract {
@@ -291,6 +300,15 @@ function sourceName(meta: Meta | null): string {
   if (meta?.label) return meta.label;
   if (!meta?.repo || meta.repo === "django/django") return "Django demo";
   return meta.repo;
+}
+
+function repositoryStatus(repository: RepositoryRecord): string {
+  if (repository.status === "ready") {
+    return `${fmt(repository.files)} files · graph ready`;
+  }
+  if (repository.status === "unindexed") return `${fmt(repository.files)} files · graph not indexed`;
+  if (repository.status === "indexing") return "Indexing graph…";
+  return repository.error ?? "Import failed. Retry from Add repository.";
 }
 
 function fmt(n: number): string {
@@ -408,8 +426,6 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [digest, setDigest] = useState("");
-  const [connectBusy, setConnectBusy] = useState(false);
-  const [connectNotice, setConnectNotice] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpen);
   const issueRef = useRef<HTMLTextAreaElement>(null);
   const fileRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -528,7 +544,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
       .then(async (response) => {
         const body = (await response.json()) as StoredRun & { error?: string };
         if (!response.ok) throw new Error(body.error ?? "run could not be opened");
-        const restored = { ...body.result, request: body.result.request || body.request };
+        const restored = { ...body.result, repo: body.result.repo || body.repo, request: body.result.request || body.request };
         setActiveRequest(compactRequest(body.request));
         setRetrieve(restored);
         setSelectedFile(restored.ranked[0]?.path ?? null);
@@ -556,7 +572,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     return {
       schema: "ContextContractV1",
       request: retrieve.request || activeRequest,
-      repository: meta?.repo ?? "local repository",
+      repository: retrieve.repo ?? meta?.repo ?? "local repository",
       targets: retrieve.ranked.map((file, index) => ({
         path: file.path,
         rank: index + 1,
@@ -691,7 +707,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
       const response = await fetch(`${API}/runs/${encodeURIComponent(runId)}`);
       const body = (await response.json()) as StoredRun & { error?: string };
       if (!response.ok) throw new Error(body.error ?? "run could not be opened");
-      const restored = { ...body.result, request: body.result.request || body.request };
+      const restored = { ...body.result, repo: body.result.repo || body.repo, request: body.result.request || body.request };
       setActiveRequest(compactRequest(body.request));
       setRetrieve(restored);
       setSelectedFile(restored.ranked[0]?.path ?? null);
@@ -707,12 +723,15 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${API}/demo`);
+      const response = await fetch(`${API}/demo`, { method: "POST" });
       const body = (await response.json()) as Demo & { error?: string };
       if (!response.ok) throw new Error(body.error ?? "demo failed");
       setDemo(body);
       setGold(body.gold);
       setIssue(SAMPLE_ISSUE);
+      setRetrieve(null);
+      setImpact(null);
+      await Promise.all([refreshMeta(), refreshRepositories(), refreshRuns(), refreshEvents()]);
       await runRetrieve(body.issue, { displayText: SAMPLE_ISSUE, source: "demo" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "demo failed");
@@ -752,22 +771,6 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     }
   }
 
-  async function writeCursorConfig() {
-    setConnectBusy(true);
-    setConnectNotice(null);
-    try {
-      const response = await fetch(`${API}/connect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      const body = (await response.json()) as { mcpPath?: string; rulePath?: string; error?: string };
-      if (!response.ok) throw new Error(body.error ?? "Could not write Cursor config");
-      setConnectNotice(`Wrote ${body.mcpPath}`);
-      await refreshEvents();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not write Cursor config");
-    } finally {
-      setConnectBusy(false);
-    }
-  }
-
   async function activateRepository(slug: string) {
     setBusy(true);
     setError(null);
@@ -779,6 +782,12 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
       });
       const body = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Repository could not be activated");
+      setRetrieve(null);
+      setActiveRequest("");
+      setSelectedFile(null);
+      setImpact(null);
+      setDemo(null);
+      setGold([]);
       await Promise.all([refreshMeta(), refreshRepositories(), refreshRuns(), refreshEvents()]);
       router.push("/app/workspace", { scroll: false });
     } catch (reason) {
@@ -819,7 +828,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
               <span className="grid h-8 w-8 shrink-0 place-items-center text-lexical"><GitFork size={19} /></span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-semibold">{repositorySelected ? sourceName(meta) : "Choose repository"}</span>
-                <span className="mt-0.5 block truncate text-[11px] text-muted">{repositorySelected ? `${fmt(meta?.files ?? 0)} indexed files` : "No source selected"}</span>
+                <span className="mt-0.5 block truncate text-[11px] text-muted">{repositorySelected ? `${fmt(meta?.files ?? 0)} searchable files` : "No source selected"}</span>
               </span>
             </Link>
             <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-3 pb-4">
@@ -839,9 +848,9 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
                           <GitFork size={15} className="shrink-0 text-muted group-hover:text-lexical" />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium text-foreground">{repository.label}</span>
-                            <span className="mt-0.5 block text-[10px] text-muted">{repository.status === "ready" ? `${fmt(repository.files)} files` : repository.status}</span>
+                            <span className="mt-0.5 block truncate text-[10px] text-muted">{repositoryStatus(repository)}</span>
                           </span>
-                          <span className={`h-1.5 w-1.5 rounded-full ${repository.active ? "bg-[#2f9e68]" : repository.status === "error" ? "bg-accent" : "border border-[#b8cbd6]"}`} />
+                          <span className={`h-1.5 w-1.5 rounded-full ${repository.graphReady ? "bg-[#2f9e68]" : repository.status === "error" ? "bg-accent" : "border border-[#b8cbd6]"}`} />
                         </button>
                       </li>
                     ))}
@@ -885,7 +894,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
               <p className="hidden truncate text-sm font-medium text-foreground sm:block lg:hidden">{workspaceTitle(view, meta)}</p>
             </div>
             <div className="flex items-center gap-3">
-              {repositorySelected ? <span className="hidden md:block"><StatusPill ready={graphReady}>{graphReady ? "Graph ready" : "Graph offline"}</StatusPill></span> : null}
+              {repositorySelected ? <span className="hidden md:block"><StatusPill ready={graphReady}>{graphReady ? "Graph ready" : meta?.serviceReady ? "Graph not indexed" : "Graph offline"}</StatusPill></span> : null}
               {repositorySelected && view !== "request" ? (
                 <Link href="/app/new" className={`${buttonBase} gap-2 bg-foreground px-3.5 text-panel hover:bg-[#2a3540] ${focusRing}`}>
                   <Plus size={15} weight="bold" /> <span className="sm:hidden">New</span><span className="hidden sm:inline">New preflight</span>
@@ -899,9 +908,17 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
             </header>
           )}
 
-          {!graphReady && repositorySelected ? (
+          {!meta && repositorySelected ? (
+            <Notice tone="orange" message="The Lumos API is unavailable. Start it locally, then retry.">
+              <button type="button" onClick={() => void refreshMeta()} className={`${buttonBase} min-h-8 border border-line bg-panel px-3 text-foreground ${focusRing}`}>Retry</button>
+            </Notice>
+          ) : meta && !meta.serviceReady && repositorySelected ? (
             <Notice tone="blue" message={<>HydraDB is offline. Bootstrap with <code className="font-mono font-semibold text-foreground">pnpm start</code> or <code className="font-mono font-semibold text-foreground">pnpm db:up</code>.</>}>
               <button type="button" onClick={() => void refreshMeta()} className={`${buttonBase} min-h-8 border border-line bg-panel px-3 text-foreground ${focusRing}`}>Retry</button>
+            </Notice>
+          ) : meta?.serviceReady && !graphReady && repositorySelected ? (
+            <Notice tone="orange" message="Files were found, but this repository has no HydraDB graph yet. Index it before running a preflight.">
+              <Link href="/app/repository" className={`${buttonBase} min-h-8 border border-[#efc7b3] bg-panel px-3 text-foreground ${focusRing}`}>Index repository</Link>
             </Notice>
           ) : null}
 
@@ -929,7 +946,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
                 <WelcomeView
                   meta={meta}
                   graphReady={graphReady}
-                  onDemo={() => navigate("overview")}
+                  onDemo={() => void loadDemo()}
                   onRepository={() => navigate("repository")}
                 />
               ) : null}
@@ -940,6 +957,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
                   events={events}
                   repositories={repositories}
                   graphReady={graphReady}
+                  serviceReady={meta?.serviceReady === true}
                   onNew={() => navigate("request")}
                   onOpenRun={(id) => void openRun(id)}
                   onKillerDemo={() => void loadDemo()}
@@ -1023,15 +1041,12 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
                   meta={meta}
                   events={events}
                   copied={copied}
-                  connectBusy={connectBusy}
-                  connectNotice={connectNotice}
                   onCopy={copyText}
-                  onWriteConfig={() => void writeCursorConfig()}
                 />
               ) : null}
               {view === "repository" ? (
                 <RepositoryView
-                  graphReady={graphReady}
+                  serviceReady={meta?.serviceReady === true}
                   repositories={repositories}
                   onDemo={() => void loadDemo()}
                   onReady={async () => {
@@ -1053,6 +1068,8 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
               ) : null}
               {view === "graph" ? (
                 <GraphExplorerView
+                  key={meta?.repo ?? "no-repository"}
+                  repo={meta?.repo ?? ""}
                   impact={impact}
                   graphNodes={graphNodes}
                   graphLinks={graphLinks}
@@ -1068,8 +1085,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
                   summary={evalSummary}
                   cases={evalCases}
                   demo={demo}
-                  meta={meta}
-                  graphReady={graphReady}
+                  serviceReady={meta?.serviceReady === true}
                   onRefresh={() => void refreshEval()}
                   onRunDemo={() => void loadDemo()}
                 />
@@ -1118,15 +1134,14 @@ function WorkspaceNav({
 }) {
   if (mobile) {
     if (!connected) return null;
-    const mobilePages = workspacePages.filter((item) => ["overview", "repositories", "runs", "request"].includes(item.id));
     return (
-      <nav className="grid grid-cols-4 px-2" aria-label="Workspace pages">
-        {mobilePages.map((item) => (
+      <nav className="flex overflow-x-auto px-2" aria-label="Workspace pages">
+        {workspacePages.map((item) => (
           <Link
             key={item.id}
             href={workspaceHref(item.id, runId)}
             aria-current={view === item.id ? "page" : undefined}
-            className={`relative flex min-h-12 min-w-0 items-center justify-center gap-2 px-1 text-center text-[11px] font-semibold sm:text-xs ${focusRing} ${view === item.id ? "text-foreground" : "text-muted"}`}
+            className={`relative flex min-h-12 min-w-[7.5rem] shrink-0 items-center justify-center gap-2 px-2 text-center text-[11px] font-semibold sm:text-xs ${focusRing} ${view === item.id ? "text-foreground" : "text-muted"}`}
           >
             <ViewGlyph view={item.id} active={view === item.id} compact />
             {item.label}
@@ -1476,7 +1491,7 @@ function WelcomeView({
             </p>
             <p className="inline-flex items-center gap-2">
               <span className={`h-1.5 w-1.5 rounded-full ${graphReady ? "bg-[#2f9e68]" : "bg-accent"}`} />
-              {graphReady ? `Graph ready · ${fmt(meta?.files ?? 2926)} files indexed` : "Start HydraDB to index"}
+              {graphReady ? `Graph ready · ${fmt(meta?.files ?? 0)} searchable files` : meta?.serviceReady ? "Active repository needs indexing" : "Start HydraDB to index"}
             </p>
           </div>
         </section>
@@ -1491,7 +1506,7 @@ function WelcomeView({
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="text-[15px] font-semibold">Try Lumos on Django</span>
                   <span className="source-card-badge">Included demo</span>
-                  {graphReady ? <span className="source-card-live">Live</span> : null}
+                  {meta?.serviceReady ? <span className="source-card-live">Live</span> : null}
                 </span>
                 <span className="mt-1.5 block text-sm leading-6 text-muted">
                   Run a real bug through ranked files, graph proof, and connected tests.
@@ -1536,6 +1551,7 @@ function OverviewView({
   events,
   repositories,
   graphReady,
+  serviceReady,
   onNew,
   onOpenRun,
   onKillerDemo,
@@ -1545,6 +1561,7 @@ function OverviewView({
   events: ActivityEvent[];
   repositories: RepositoryRecord[];
   graphReady: boolean;
+  serviceReady: boolean;
   onNew: () => void;
   onOpenRun: (id: string) => void;
   onKillerDemo: () => void;
@@ -1558,23 +1575,23 @@ function OverviewView({
       <header className="dashboard-intro relative min-h-[9rem] overflow-hidden pr-0 sm:pr-56">
         <p className="text-sm text-muted">Active repository · {sourceName(meta)}</p>
         <h1 className="mt-3 max-w-3xl text-[2.1rem] font-semibold leading-[1.08] tracking-[-0.045em] sm:text-[2.65rem]">
-          Your codebase is ready for intelligent context.
+          {graphReady ? "Your codebase is ready for agent context." : "Your files are visible. The graph still needs indexing."}
         </h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-muted">
-          Lumos has indexed your code and is ready to prove the smallest useful context before an agent edits.
+          {graphReady ? "Lumos can now prove the smallest useful context before an agent edits." : "Browse the source now, then index this repository into HydraDB before running a preflight."}
         </p>
         <Image src="/assets/lumos-graph-core.png" alt="" width={448} height={448} className="dashboard-core-art" />
       </header>
 
       <dl className="dashboard-metric-grid mt-7">
-        <DashboardMetric icon={<Files size={21} />} value={fmt(meta?.files ?? 0)} label="Files indexed" detail={activeRepository?.source === "github" ? "Imported from GitHub" : sourceName(meta)} tone="blue" />
+        <DashboardMetric icon={<Files size={21} />} value={fmt(meta?.files ?? 0)} label="Searchable files" detail={activeRepository?.source === "github" ? "Imported from GitHub" : sourceName(meta)} tone="blue" />
         <DashboardMetric icon={<ClockCounterClockwise size={21} />} value={fmt(runs.length)} label="Saved preflights" detail={runs.length ? "Evidence ready to reopen" : "Run your first preflight"} tone="green" />
         <DashboardMetric icon={<PlugsConnected size={21} />} value={fmt(mcpEvents.length)} label="Agent tool calls" detail={mcpEvents.length ? "Recorded through MCP" : "No agent connected yet"} tone="orange" />
-        <DashboardMetric icon={<Graph size={21} />} value={graphReady ? "Ready" : "Offline"} label="HydraDB graph" detail={graphReady ? "Relationship paths available" : "Start the graph service"} tone="violet" />
+        <DashboardMetric icon={<Graph size={21} />} value={graphReady ? "Ready" : serviceReady ? "Not indexed" : "Offline"} label="HydraDB graph" detail={graphReady ? "Current repository indexed" : serviceReady ? "Index this repository" : "Start the graph service"} tone="violet" />
       </dl>
 
       <div className="mt-7 grid gap-6 xl:grid-cols-[minmax(19rem,0.72fr)_minmax(0,1.45fr)]">
-        <section className="dashboard-card p-6 sm:p-7">
+        <section className="dashboard-card relative p-6 sm:p-7">
           <h2 className="text-base font-semibold">Get started</h2>
           <p className="mt-1 text-sm text-muted">Three steps from source to agent-ready proof.</p>
           <ol className="setup-timeline mt-7">
@@ -1595,11 +1612,11 @@ function OverviewView({
           </div>
         </section>
 
-        <section className="dashboard-card p-6 sm:p-7">
+        <section className="dashboard-card relative p-6 sm:p-7">
           <h2 className="text-base font-semibold">Quick start</h2>
           <p className="mt-1 text-sm text-muted">Explore the proof case or bring in a public codebase.</p>
           <div className="mt-6 grid gap-4 md:grid-cols-2">
-            <button type="button" disabled={!graphReady} onClick={onKillerDemo} className={`quickstart-card group text-left ${focusRing}`}>
+            <button type="button" disabled={!serviceReady} onClick={onKillerDemo} className={`quickstart-card group text-left ${focusRing}`}>
               <span className="quickstart-icon quickstart-icon-blue"><Bug size={20} /></span>
               <span className="quickstart-badge">Included proof case</span>
               <strong>Try Lumos on Django</strong>
@@ -1981,28 +1998,25 @@ function ConnectAgentView({
   meta,
   events,
   copied,
-  connectBusy,
-  connectNotice,
   onCopy,
-  onWriteConfig,
 }: {
   meta: Meta | null;
   events: ActivityEvent[];
   copied: CopyTarget;
-  connectBusy: boolean;
-  connectNotice: string | null;
   onCopy: (value: string, target: Exclude<CopyTarget, null>) => Promise<void>;
-  onWriteConfig: () => void;
 }) {
+  const repository = meta?.repo ?? "owner/name";
+  const setupCommand = `cd /absolute/path/to/lumos
+pnpm lumos init /absolute/path/to/repository --slug ${repository}
+pnpm lumos connect /absolute/path/to/repository`;
   const config = JSON.stringify({
     mcpServers: {
       lumos: {
         command: "pnpm",
-        args: ["mcp"],
-        cwd: meta?.workspace ?? "/absolute/path/to/lumos",
+        args: ["--dir", "/absolute/path/to/lumos", "mcp"],
         env: {
-          LUMOS_REPO: meta?.repo ?? "owner/name",
-          LUMOS_ROOT: meta?.root ?? "/absolute/path/to/repository",
+          LUMOS_REPO: repository,
+          LUMOS_ROOT: "/absolute/path/to/repository",
         },
       },
     },
@@ -2012,7 +2026,7 @@ function ConnectAgentView({
     <div className="mx-auto w-full max-w-[1240px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
       <div className="max-w-4xl">
         <h1 className="text-3xl font-semibold tracking-[-0.035em]">Connect your coding agent</h1>
-        <p className="mt-2 text-sm leading-6 text-muted">Write a Cursor MCP config and a project rule so the agent preflights before it edits and verifies after.</p>
+        <p className="mt-2 text-sm leading-6 text-muted">Run the setup on the computer that owns your repository. The browser cannot write your local Cursor files.</p>
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(30rem,1.1fr)_minmax(22rem,0.9fr)]">
@@ -2020,35 +2034,30 @@ function ConnectAgentView({
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-4">
             <div>
               <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">Cursor</p>
-              <h2 className="mt-2 text-xl font-semibold">Write config for {sourceName(meta)}</h2>
+              <h2 className="mt-2 text-xl font-semibold">Set up {sourceName(meta)} locally</h2>
             </div>
             <StatusPill ready={meta?.ready === true}>{meta?.ready ? "server ready" : "server offline"}</StatusPill>
           </div>
           <ol className="mt-5 space-y-4 text-sm leading-6 text-muted">
             <li><strong className="text-foreground">1.</strong> Keep HydraDB running locally.</li>
-            <li><strong className="text-foreground">2.</strong> Write the MCP server and Lumos rule into the indexed repository.</li>
+            <li><strong className="text-foreground">2.</strong> Run the commands below inside your local Lumos checkout.</li>
             <li><strong className="text-foreground">3.</strong> The agent will call <code className="font-mono text-xs text-foreground">lumos.preflight_change</code> before editing and <code className="font-mono text-xs text-foreground">lumos.verify_patch</code> after.</li>
           </ol>
-          <button
-            type="button"
-            disabled={!meta?.ready || connectBusy}
-            onClick={onWriteConfig}
-            className={`${buttonBase} mt-6 bg-accent px-4 text-white hover:bg-[#a94d23] ${focusRing}`}
-          >
-            {connectBusy ? "Writing…" : "Write Cursor config"}
+          <button type="button" onClick={() => void onCopy(setupCommand, "config")} className={`${buttonBase} mt-6 bg-accent px-4 text-white hover:bg-[#a94d23] ${focusRing}`}>
+            {copied === "config" ? "Setup commands copied" : "Copy local setup commands"}
           </button>
-          {connectNotice ? <p className="mt-3 break-all text-xs leading-5 text-[#287a52]">{connectNotice}</p> : <p className="mt-3 text-xs leading-5 text-muted">Equivalent CLI: <code className="font-mono text-[10px] text-foreground">pnpm lumos connect</code></p>}
+          <pre className="mt-4 overflow-x-auto rounded-xl border border-line bg-inset p-4 font-mono text-[11px] leading-6"><code>{setupCommand}</code></pre>
           <div className="mt-6 overflow-hidden rounded-2xl border border-[#b8dbea] bg-[#eaf6fd]">
             <div className="flex items-center justify-between border-b border-[#b8dbea] px-4 py-3">
               <span className="font-mono text-[10px] text-[#315a75]">mcp.json</span>
-              <button type="button" onClick={() => void onCopy(config, "config")} className={`min-h-9 rounded-lg border border-[#9ccbe5] bg-panel px-3 text-xs font-semibold text-foreground hover:border-lexical ${focusRing}`}>{copied === "config" ? "Configuration copied" : "Copy configuration"}</button>
+              <button type="button" onClick={() => void onCopy(config, "json")} className={`min-h-10 rounded-lg border border-[#9ccbe5] bg-panel px-3 text-xs font-semibold text-foreground hover:border-lexical ${focusRing}`}>{copied === "json" ? "Configuration copied" : "Copy configuration"}</button>
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-[11px] leading-6 text-[#173a55]"><code>{config}</code></pre>
           </div>
           <p className="mt-4 text-xs leading-5 text-muted"><strong className="text-foreground">No OpenAI key is required.</strong> Lumos is the graph context layer used by the coding agent you already run.</p>
           <details className="mt-5 rounded-xl border border-line bg-inset p-4">
             <summary className={`cursor-pointer text-sm font-semibold ${focusRing}`}>Index your own repository</summary>
-            <p className="mt-3 text-xs leading-5 text-muted">Python and TypeScript/JavaScript checkouts are supported. Point init at a local repo, then restart the API and MCP server.</p>
+            <p className="mt-3 text-xs leading-5 text-muted">Python and TypeScript/JavaScript checkouts are supported. Replace both absolute path placeholders before running the commands.</p>
             <pre className="mt-3 overflow-x-auto rounded-xl border border-line bg-panel p-3 font-mono text-[10px] leading-5"><code>{`pnpm lumos init /path/to/repo --slug owner/name
 pnpm lumos connect`}</code></pre>
           </details>
@@ -2080,14 +2089,14 @@ pnpm lumos connect`}</code></pre>
 }
 
 function RepositoryView({
-  graphReady,
+  serviceReady,
   repositories,
   onDemo,
   onReady,
   copied,
   onCopy,
 }: {
-  graphReady: boolean;
+  serviceReady: boolean;
   repositories: RepositoryRecord[];
   onDemo: () => void;
   onReady: () => Promise<void>;
@@ -2156,27 +2165,27 @@ pnpm api`;
       </header>
 
       <div className="mt-9 grid gap-5 lg:grid-cols-2">
-        <section className="dashboard-card p-6 sm:p-7">
+        <section className="dashboard-card relative p-6 sm:p-7">
           <span className="quickstart-icon quickstart-icon-blue"><Bug size={21} /></span>
           <span className="quickstart-badge ml-3">Included proof case</span>
           <h2 className="mt-6 text-xl font-semibold">Explore the Django demo</h2>
           <p className="mt-2 text-sm leading-6 text-muted">Run a frozen SWE-bench bug and inspect ranked files, the HydraDB path, covering tests, and the agent handoff.</p>
-          <button type="button" disabled={!graphReady} onClick={onDemo} className={`${buttonBase} mt-6 gap-2 bg-[#176a9b] text-white hover:bg-[#12577f] ${focusRing}`}>Run the proof case <ArrowRight size={15} /></button>
+          <button type="button" disabled={!serviceReady} onClick={onDemo} className={`${buttonBase} mt-6 gap-2 bg-[#176a9b] text-white hover:bg-[#12577f] ${focusRing}`}>Run the proof case <ArrowRight size={15} /></button>
         </section>
 
-        <section className="dashboard-card p-6 sm:p-7">
+        <section className="dashboard-card relative p-6 sm:p-7">
           <div className="flex items-center gap-3"><span className="quickstart-icon quickstart-icon-orange"><GithubLogo size={21} /></span><span className="quickstart-badge quickstart-badge-live">Indexes on your Lumos server</span></div>
           <h2 className="mt-6 text-xl font-semibold">Import a public GitHub repository</h2>
           <p className="mt-2 text-sm leading-6 text-muted">Lumos clones the repository on the VM, extracts Python or TypeScript symbols, and builds its HydraDB relationships.</p>
           <form className="mt-6" onSubmit={(event) => { event.preventDefault(); void importRepository(); }}>
             <label htmlFor="repository-url" className="text-xs font-medium text-foreground">Repository URL or owner/name</label>
             <div className="mt-2 flex flex-col gap-3 sm:flex-row">
-              <input id="repository-url" value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="github.com/owner/repository" autoComplete="off" className={`h-11 min-w-0 flex-1 rounded-lg border border-line bg-background px-3.5 text-sm placeholder:text-[#91a3ae] hover:border-[#9bbdcc] ${focusRing}`} />
-              <button type="submit" disabled={!graphReady || importBusy || !repositoryUrl.trim()} className={`${buttonBase} h-11 gap-2 bg-[#176a9b] text-white hover:bg-[#12577f] ${focusRing}`}>{importBusy ? "Starting…" : "Import repository"} <ArrowRight size={15} /></button>
+              <input id="repository-url" type="text" inputMode="url" value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="github.com/owner/repository" autoComplete="url" autoCapitalize="none" spellCheck={false} aria-invalid={importError || job?.status === "error" ? true : undefined} aria-describedby={importError || job?.status === "error" ? "repository-import-error" : undefined} className={`h-11 min-w-0 flex-1 rounded-lg border border-line bg-background px-3.5 text-sm placeholder:text-[#91a3ae] hover:border-[#9bbdcc] ${focusRing}`} />
+              <button type="submit" disabled={!serviceReady || importBusy || !repositoryUrl.trim()} aria-busy={importBusy} className={`${buttonBase} h-11 gap-2 bg-[#176a9b] text-white hover:bg-[#12577f] ${focusRing}`}>{importBusy ? "Starting…" : "Import repository"} <ArrowRight size={15} /></button>
             </div>
           </form>
-          {job ? <div className={`mt-4 rounded-lg border px-4 py-3 text-sm ${job.status === "error" ? "border-[#efc0a6] bg-[#fff8f3]" : "border-[#b8dbea] bg-[#f2faff]"}`}><div className="flex items-center justify-between gap-3"><strong>{job.slug}</strong><span className="text-xs capitalize text-muted">{job.status}</span></div><p className="mt-1 text-xs text-muted">{job.error ?? job.message}</p>{["queued", "cloning", "indexing"].includes(job.status) ? <span className="import-progress mt-3"><i /></span> : null}</div> : null}
-          {importError ? <p className="mt-3 text-sm text-accent">{importError}</p> : null}
+          {job ? <div id={job.status === "error" ? "repository-import-error" : undefined} role={job.status === "error" ? "alert" : "status"} className={`mt-4 rounded-lg border px-4 py-3 text-sm ${job.status === "error" ? "border-[#efc0a6] bg-[#fff8f3]" : "border-[#b8dbea] bg-[#f2faff]"}`}><div className="flex items-center justify-between gap-3"><strong>{job.slug}</strong><span className="text-xs capitalize text-muted">{job.status}</span></div><p className="mt-1 text-xs text-muted">{job.error ?? job.message}</p>{["queued", "cloning", "indexing"].includes(job.status) ? <span className="import-progress mt-3"><i /></span> : null}{job.status === "error" ? <button type="button" disabled={importBusy} onClick={() => void importRepository()} className={`${buttonBase} mt-3 min-h-10 border border-[#efc0a6] bg-panel px-3 text-foreground ${focusRing}`}>Retry import</button> : null}</div> : null}
+          {importError ? <p id="repository-import-error" role="alert" className="mt-3 text-sm text-accent">{importError}</p> : null}
         </section>
       </div>
 
@@ -2247,7 +2256,7 @@ function RepositoryBrowserView({ repositories, meta, graphReady, onActivate, onR
   return <div className="repository-browser mx-auto w-full max-w-[1440px] px-5 py-8 sm:px-8 lg:px-10">
     <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-sm font-medium text-lexical">Repository workspace</p><h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">Browse what Lumos indexed.</h1><p className="mt-2 text-sm text-muted">Search the complete indexed file set, inspect source, or switch repositories.</p></div><div className="flex gap-2"><button type="button" onClick={onRefresh} className={`${buttonBase} border border-line bg-panel px-3.5 text-foreground ${focusRing}`}>Refresh</button><Link href="/app/repository" className={`${buttonBase} gap-2 bg-[#176a9b] text-white hover:bg-[#12577f] ${focusRing}`}><Plus size={15} /> Add repository</Link></div></header>
 
-    <section className="mt-7 flex gap-3 overflow-x-auto pb-2" aria-label="Indexed repositories">{repositories.map((repository) => <button key={repository.slug} type="button" disabled={repository.active || repository.status !== "ready"} onClick={() => onActivate(repository.slug)} className={`min-w-[13.5rem] rounded-xl border p-4 text-left ${repository.active ? "border-[#8fc6e1] bg-[#edf8fd]" : "border-line bg-panel hover:border-[#9bc8dc]"} ${focusRing}`}><div className="flex items-center justify-between gap-3"><GithubLogo size={17} className="text-lexical" /><span className={`h-1.5 w-1.5 rounded-full ${repository.active ? "bg-[#2f9e68]" : repository.status === "error" ? "bg-accent" : "border border-[#aec3cf]"}`} /></div><strong className="mt-3 block truncate text-sm">{repository.label}</strong><small className="mt-1 block text-xs text-muted">{repository.status === "ready" ? `${fmt(repository.files)} indexed files` : repository.status}</small></button>)}</section>
+    <section className="mt-7 flex gap-3 overflow-x-auto pb-2" aria-label="Repositories">{repositories.map((repository) => <button key={repository.slug} type="button" disabled={repository.active || repository.status !== "ready"} onClick={() => onActivate(repository.slug)} title={repositoryStatus(repository)} className={`min-w-[13.5rem] rounded-xl border p-4 text-left ${repository.active ? "border-[#8fc6e1] bg-[#edf8fd]" : "border-line bg-panel hover:border-[#9bc8dc]"} ${focusRing}`}><div className="flex items-center justify-between gap-3"><GithubLogo size={17} className="text-lexical" /><span className={`h-1.5 w-1.5 rounded-full ${repository.graphReady ? "bg-[#2f9e68]" : repository.status === "error" ? "bg-accent" : "border border-[#aec3cf]"}`} /></div><strong className="mt-3 block truncate text-sm">{repository.label}</strong><small className="mt-1 block truncate text-xs text-muted">{repositoryStatus(repository)}</small></button>)}</section>
 
     <div className="repository-browser-shell mt-5">
       <aside className="repository-file-pane">
@@ -2257,11 +2266,12 @@ function RepositoryBrowserView({ repositories, meta, graphReady, onActivate, onR
       </aside>
       <section className="repository-source-pane"><div className="flex min-h-12 items-center justify-between gap-3 border-b border-line px-4"><p className="truncate font-mono text-xs font-semibold">{selected ?? "Select a file"}</p>{selected ? <Link href={`/app/new`} className={`text-xs font-semibold text-lexical ${focusRing}`}>Preflight a change <ArrowRight size={12} className="inline" /></Link> : null}</div>{fileError ? <div className="p-6 text-sm text-accent">{fileError}</div> : source !== null ? <div className="source-code-view" aria-label={`Source preview for ${selected}`}>{source.split("\n").map((line, index) => <div key={index} className="source-code-line"><span>{index + 1}</span><code>{line || " "}</code></div>)}{truncated ? <p className="p-4 text-xs text-muted">Preview truncated at 200 KB.</p> : null}</div> : <div className="grid min-h-[28rem] place-items-center p-8 text-center"><div><Files size={25} className="mx-auto text-lexical" /><p className="mt-3 text-sm font-medium">Choose an indexed file</p><p className="mt-1 text-sm text-muted">Its source will appear here.</p></div></div>}</section>
     </div>
-    {!graphReady ? <p className="mt-4 text-xs text-accent">HydraDB is offline. File browsing remains available once the API can read the active corpus.</p> : null}
+    {!graphReady ? <p className="mt-4 text-xs text-accent">The active repository has no graph index yet. File browsing remains available.</p> : null}
   </div>;
 }
 
 function GraphExplorerView({
+  repo,
   impact,
   graphNodes,
   graphLinks,
@@ -2271,6 +2281,7 @@ function GraphExplorerView({
   onWalk,
   onSelect,
 }: {
+  repo: string;
   impact: ImpactResult | null;
   graphNodes: GraphNode[];
   graphLinks: GraphLink[];
@@ -2280,12 +2291,28 @@ function GraphExplorerView({
   onWalk: (symbol: string) => void;
   onSelect: (node: string) => void;
 }) {
-  const [symbol, setSymbol] = useState("django.template.defaultfilters.join");
-  const suggestions = [
-    "django.template.defaultfilters.join",
-    "django.urls.resolvers.URLResolver.resolve",
-    "django.forms.fields.URLField.to_python",
-  ];
+  const [symbol, setSymbol] = useState("");
+  const [suggestions, setSuggestions] = useState<{ qualname: string; path: string; kind: string }[]>([]);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!repo || !graphReady) return;
+    const controller = new AbortController();
+    void fetch(`${API}/symbols?limit=6`, { signal: controller.signal })
+      .then(async (response) => {
+        const body = (await response.json()) as { symbols?: { qualname: string; path: string; kind: string }[]; error?: string };
+        if (!response.ok) throw new Error(body.error ?? "Repository symbols unavailable");
+        const next = body.symbols ?? [];
+        setSuggestionError(null);
+        setSuggestions(next);
+        setSymbol(next[0]?.qualname ?? "");
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setSuggestionError(reason instanceof Error ? reason.message : "Repository symbols unavailable");
+      });
+    return () => controller.abort();
+  }, [graphReady, repo]);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -2294,20 +2321,22 @@ function GraphExplorerView({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-[-0.025em]">Graph explorer</h1>
-              <p className="mt-1 text-sm text-muted">Follow calls, coverage, and co-change paths from one Python symbol.</p>
+              <p className="mt-1 text-sm text-muted">Follow calls and covering tests from a symbol in {repo || "the active repository"}.</p>
             </div>
             <form className="flex w-full max-w-2xl gap-2" onSubmit={(event) => { event.preventDefault(); onWalk(symbol.trim()); }}>
-              <label className="sr-only" htmlFor="graph-symbol">Python symbol</label>
+              <label className="sr-only" htmlFor="graph-symbol">Repository symbol</label>
               <div className="relative min-w-0 flex-1">
                 <MagnifyingGlass size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-                <input id="graph-symbol" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="package.module.symbol" className={`h-10 w-full rounded-lg border border-line bg-background pl-9 pr-3 font-mono text-xs text-foreground placeholder:text-muted hover:border-[#aebfc9] ${focusRing}`} />
+                <input id="graph-symbol" type="search" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="package.module.symbol" autoComplete="off" spellCheck={false} className={`h-10 w-full rounded-lg border border-line bg-background pl-9 pr-3 font-mono text-xs text-foreground placeholder:text-muted hover:border-[#aebfc9] ${focusRing}`} />
               </div>
               <button type="submit" disabled={!graphReady || busy || !symbol.trim()} className={`${buttonBase} bg-foreground text-panel hover:bg-[#2a3540] ${focusRing}`}>{busy ? "Walking" : "Trace"}</button>
             </form>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            {suggestions.map((item) => <button key={item} type="button" onClick={() => { setSymbol(item); onWalk(item); }} className={`rounded-md border border-line bg-background px-2.5 py-1.5 font-mono text-[10px] text-muted hover:border-lexical hover:text-foreground ${focusRing}`}>{item.split(".").at(-1)}</button>)}
+            {suggestions.map((item) => <button key={item.qualname} type="button" title={`${item.qualname} · ${item.path}`} onClick={() => { setSymbol(item.qualname); onWalk(item.qualname); }} className={`min-h-10 rounded-md border border-line bg-background px-3 py-2 font-mono text-[10px] text-muted hover:border-lexical hover:text-foreground ${focusRing}`}>{item.qualname.split(".").at(-1)}</button>)}
           </div>
+          {suggestionError ? <p role="alert" className="mt-3 text-xs text-accent">{suggestionError}</p> : null}
+          {graphReady && !suggestionError && suggestions.length === 0 ? <p className="mt-3 text-xs text-muted">No repository symbols are available yet.</p> : null}
         </div>
       </div>
 
@@ -2768,7 +2797,7 @@ function HandoffView({ contract, contractJson, markdown, digest, copied, onCopy,
   );
 }
 
-function BenchmarkView({ summary, cases, demo, meta, onRefresh, onRunDemo, graphReady }: { summary: EvalSummary | null; cases: EvalCase[]; demo: Demo | null; meta: Meta | null; onRefresh: () => void; onRunDemo: () => void; graphReady: boolean }) {
+function BenchmarkView({ summary, cases, demo, onRefresh, onRunDemo, serviceReady }: { summary: EvalSummary | null; cases: EvalCase[]; demo: Demo | null; onRefresh: () => void; onRunDemo: () => void; serviceReady: boolean }) {
   const [filter, setFilter] = useState<"all" | EvalCase["outcome"]>("all");
   if (!summary) return <EmptyView number="EV" eyebrow="Measured retrieval" title="Benchmark data is unavailable." body="Start the Lumos API or run pnpm eval to produce the frozen comparison artifact." action="Retry" onAction={onRefresh} />;
   const visibleCases = filter === "all" ? cases : cases.filter((item) => item.outcome === filter);
@@ -2796,12 +2825,12 @@ function BenchmarkView({ summary, cases, demo, meta, onRefresh, onRunDemo, graph
             <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-lexical">A real case where names mislead</p>
             <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em]">The correct edit was hidden behind a relationship.</h2>
             <p className="mt-4 max-w-2xl text-sm leading-6 text-muted">In Django bug 16873, text similarity ranked the eventual patch file third. A covering-test path connected the request to that file, so Lumos could put it first and show the evidence.</p>
-            <button type="button" disabled={!graphReady} onClick={onRunDemo} className={`${buttonBase} mt-6 gap-2 bg-accent text-white hover:bg-[#a94d23] ${focusRing}`}>Open the disagreement case <ArrowRight size={15} /></button>
+            <button type="button" disabled={!serviceReady} onClick={onRunDemo} className={`${buttonBase} mt-6 gap-2 bg-accent text-white hover:bg-[#a94d23] ${focusRing}`}>Open the disagreement case <ArrowRight size={15} /></button>
           </div>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <span className="rounded-full border border-[#9bcde5] bg-panel px-3 py-1.5 font-mono text-[10px] text-lexical">{demo?.id ?? "django-16873"}</span>
             <dl className="grid w-full grid-cols-2 gap-px overflow-hidden rounded-2xl border border-[#b6d9ea] bg-[#b6d9ea] sm:grid-cols-4 lg:grid-cols-2">
-              <CaseMetric label="Repository" value={`${fmt(meta?.files ?? 913)} files`} />
+              <CaseMetric label="Repository" value={`${fmt(demo?.files ?? 865)} files`} />
               <CaseMetric label="Text search" value="#3" />
               <CaseMetric label="Lumos" value="#1" accent />
               <CaseMetric label="Connected tests" value="20" />
