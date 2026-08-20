@@ -54,15 +54,25 @@ git -C data/repos/django checkout --force --detach febefb175e03352e5aeb2ed827024
 pnpm db:down || true
 pnpm db:up
 sleep 5
-pnpm probe
+for attempt in 1 2 3 4 5; do
+  if pnpm probe; then
+    break
+  fi
+  if [[ "$attempt" -eq 5 ]]; then
+    echo "HydraDB probe failed after $attempt attempts" >&2
+    exit 1
+  fi
+  sleep 3
+done
 
 if [[ -f data/extract/django.jsonl ]]; then
   echo "==> ingest from extract (fast)"
   node --no-warnings --import tsx --env-file-if-exists=.env packages/ingest/src/cli.ts \
-    data/extract/django.jsonl data/extract/django.cochange.jsonl
+    data/extract/django.jsonl data/extract/django.cochange.jsonl \
+    --chunk-size "${LUMOS_INGEST_CHUNK_SIZE:-250}"
 else
   echo "==> full index (slow)"
-  pnpm lumos index data/repos/django --slug django/django
+  LUMOS_INGEST_CHUNK_SIZE="${LUMOS_INGEST_CHUNK_SIZE:-250}" pnpm lumos index data/repos/django --slug django/django
 fi
 
 mkdir -p data/swebench

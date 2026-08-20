@@ -162,9 +162,20 @@ function indexRepo(
   console.log(`cochange`);
   writeFileSync(cochange, run("python3", [join(home, "tools/mine_cochange.py"), root, "--max-commits", "3000"], home));
   console.log(`ingest`);
+  const ingestArgs = [
+    "--no-warnings",
+    "--import",
+    "tsx",
+    "--env-file-if-exists=.env",
+    "packages/ingest/src/cli.ts",
+    jsonl,
+    cochange,
+  ];
+  const ingestChunkSize = process.env.LUMOS_INGEST_CHUNK_SIZE;
+  if (ingestChunkSize) ingestArgs.push("--chunk-size", ingestChunkSize);
   run(
     "node",
-    ["--no-warnings", "--import", "tsx", "--env-file-if-exists=.env", "packages/ingest/src/cli.ts", jsonl, cochange],
+    ingestArgs,
     home,
   );
   console.log(`\nindexed ${slug}. Ask with: lumos ask "…"`);

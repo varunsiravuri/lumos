@@ -63,10 +63,19 @@ git -C data/repos/django checkout --force --detach febefb175e03352e5aeb2ed827024
 
 echo "==> hydradb"
 pnpm db:up
-pnpm probe
+for attempt in 1 2 3 4 5; do
+  if pnpm probe; then
+    break
+  fi
+  if [[ "$attempt" -eq 5 ]]; then
+    echo "HydraDB probe failed after $attempt attempts" >&2
+    exit 1
+  fi
+  sleep 3
+done
 
 echo "==> index django (slow)"
-pnpm lumos index data/repos/django --slug django/django
+LUMOS_INGEST_CHUNK_SIZE="${LUMOS_INGEST_CHUNK_SIZE:-250}" pnpm lumos index data/repos/django --slug django/django
 
 echo "==> swebench lite for killer demo"
 mkdir -p data/swebench
