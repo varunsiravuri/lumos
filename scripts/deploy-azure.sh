@@ -85,7 +85,7 @@ LUMOS_INGEST_CHUNK_SIZE="${LUMOS_INGEST_CHUNK_SIZE:-250}" pnpm lumos index data/
 
 echo "==> swebench lite for killer demo"
 mkdir -p data/swebench
-pnpm swebench --repo django/django > data/swebench/lite.jsonl || true
+python3 tools/swebench_fetch.py --repo django/django > data/swebench/lite.jsonl || true
 
 export NEXT_PUBLIC_LUMOS_API="/api"
 
@@ -136,7 +136,8 @@ WantedBy=multi-user.target
 UNIT
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now lumos-api lumos-web
+sudo systemctl enable lumos-api lumos-web
+sudo systemctl restart lumos-api lumos-web
 if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
   DOMAIN="$DOMAIN" APP_DIR="$APP_DIR" ./scripts/install-production-ops.sh
 else

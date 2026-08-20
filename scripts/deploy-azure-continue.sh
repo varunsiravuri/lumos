@@ -75,7 +75,9 @@ for attempt in 1 2 3 4 5; do
   sleep 3
 done
 
-if [[ -f data/extract/django.jsonl ]]; then
+if curl -fsS http://127.0.0.1:8787/health 2>/dev/null | grep -q '"ready":true.*"repo":"django/django"'; then
+  echo "==> existing Django graph is ready; skipping redundant ingest"
+elif [[ -f data/extract/django.jsonl ]]; then
   echo "==> ingest from extract (fast)"
   node --no-warnings --import tsx --env-file-if-exists=.env packages/ingest/src/cli.ts \
     data/extract/django.jsonl data/extract/django.cochange.jsonl \
@@ -87,7 +89,7 @@ fi
 
 mkdir -p data/swebench
 if [[ ! -s data/swebench/lite.jsonl ]]; then
-  pnpm swebench --repo django/django > data/swebench/lite.jsonl || true
+  python3 tools/swebench_fetch.py --repo django/django > data/swebench/lite.jsonl || true
 fi
 
 export NEXT_PUBLIC_LUMOS_API="/api"
@@ -135,7 +137,8 @@ WantedBy=multi-user.target
 UNIT
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now lumos-api lumos-web
+sudo systemctl enable lumos-api lumos-web
+sudo systemctl restart lumos-api lumos-web
 if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
   DOMAIN="$DOMAIN" APP_DIR="$APP_DIR" ./scripts/install-production-ops.sh
 else

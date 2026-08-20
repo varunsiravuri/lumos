@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { githubRepository, publicImportError, publicWorkspace } from "./http-helpers.ts";
+import { githubRepository, parseJsonLines, publicImportError, publicWorkspace } from "./http-helpers.ts";
+
+test("JSONL parsing ignores command banners and incomplete writes", () => {
+  assert.deepEqual(parseJsonLines<{ id: number }>('> lumos@0.0.1 eval\n{"id":1}\n{"id":'), [{ id: 1 }]);
+});
 
 test("GitHub repository input accepts only public GitHub owner/name forms", () => {
   assert.deepEqual(githubRepository("vercel/ms"), {

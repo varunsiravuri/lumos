@@ -1,5 +1,19 @@
 import type { WorkspaceRecord, WorkspaceStatus } from "./workspace-store.ts";
 
+export function parseJsonLines<T>(text: string): T[] {
+  const rows: T[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      rows.push(JSON.parse(line) as T);
+    } catch {
+      // Command banners or interrupted writes must not take down read-only API
+      // endpoints. Valid JSONL rows remain usable while the bad line is ignored.
+    }
+  }
+  return rows;
+}
+
 export function githubRepository(value: string): { slug: string; url: string } | null {
   const trimmed = value.trim().replace(/\/$/, "").replace(/\.git$/, "");
   const shorthand = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);

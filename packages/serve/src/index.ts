@@ -38,6 +38,7 @@ import {
 } from "./run-store.ts";
 import {
   githubRepository,
+  parseJsonLines,
   publicImportError,
   publicServerError,
   publicWorkspace,
@@ -380,9 +381,9 @@ function loadKiller(): {
   files: number;
 } | null {
   if (!existsSync(LITE_PATH)) return null;
-  for (const line of readFileSync(LITE_PATH, "utf8").split("\n")) {
-    if (!line) continue;
-    const row = JSON.parse(line) as { instance_id: string; problem: string; gold_files: string[] };
+  for (const row of parseJsonLines<{ instance_id: string; problem: string; gold_files: string[] }>(
+    readFileSync(LITE_PATH, "utf8"),
+  )) {
     if (row.instance_id !== KILLER_ID) continue;
     const measured = loadEvalOutcomes().find((outcome) => outcome.instanceId === row.instance_id);
     return {
@@ -409,17 +410,12 @@ function loadEvalOutcomes(): EvalOutcome[] {
   if (!benchmarkIssues) {
     benchmarkIssues = new Map<string, string>();
     if (existsSync(LITE_PATH)) {
-      for (const line of readFileSync(LITE_PATH, "utf8").split("\n")) {
-        if (!line) continue;
-        const row = JSON.parse(line) as { instance_id: string; problem: string };
+      for (const row of parseJsonLines<{ instance_id: string; problem: string }>(readFileSync(LITE_PATH, "utf8"))) {
         benchmarkIssues.set(row.instance_id, row.problem);
       }
     }
   }
-  return readFileSync(EVAL_RESULTS, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as EvalOutcome)
+  return parseJsonLines<EvalOutcome>(readFileSync(EVAL_RESULTS, "utf8"))
     .map((outcome) => {
       const issue = benchmarkIssues?.get(outcome.instanceId) ?? "";
       if (explicitQuotedIdentifiers(issue).size > 0) return outcome;
