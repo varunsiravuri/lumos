@@ -210,6 +210,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     const { result } = preflight;
     return {
       status: preflight.mode === "text-only" ? "needs-review" : "ready-to-edit",
+      proof: preflight.mode === "text-only" ? "text-only" : "graph-proved",
       repository: { name: REPO, filesChecked: preflight.loaded.files.length },
       files: result.ranked.map((file, rank) => ({
         rank: rank + 1,

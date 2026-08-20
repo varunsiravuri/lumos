@@ -5,6 +5,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
 mkdir -p .hydradb/minio .hydradb/cache
 
 # The container runs as the host user so the bind-mounted cache stays writable.

@@ -14,20 +14,22 @@ import { Bm25Index } from "./bm25.ts";
 const SKIP_DIRS = new Set([
   ".git", ".hg", ".svn", ".tox", ".nox", ".venv", "venv", "env",
   "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-  "build", "dist", ".eggs", "site-packages",
+  "build", "dist", ".eggs", "site-packages", ".next", "coverage", ".turbo",
 ]);
 
 /** Beyond this a file is generated data, a vendored blob or a fixture dump. */
 const MAX_BYTES = 1_500_000;
 
-/** Mirrors `is_test_path` in the extractor, so both sides agree on what a test is. */
+/** Mirrors `is_test_path` in the Python extractor. */
 export function isTestPath(path: string): boolean {
   const parts = path.split("/");
   const base = parts[parts.length - 1]!;
   return (
     base.startsWith("test_") ||
     base.endsWith("_test.py") ||
-    parts.slice(0, -1).some((part) => part === "tests" || part === "test" || part === "testing")
+    base.includes(".test.") ||
+    base.includes(".spec.") ||
+    parts.slice(0, -1).some((part) => part === "tests" || part === "test" || part === "testing" || part === "__tests__")
   );
 }
 
@@ -41,6 +43,8 @@ export interface ListOptions {
    */
   includeTests?: boolean;
 }
+
+const TS_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
 
 export function listPythonFiles(root: string, options: ListOptions = {}): string[] {
   const files: string[] = [];
@@ -60,13 +64,46 @@ export function listPythonFiles(root: string, options: ListOptions = {}): string
   return files.filter((path) => options.includeTests || !isTestPath(path)).sort();
 }
 
+/** TypeScript / JavaScript sources; skip list mirrors tools/extract_typescript.ts. */
+export function listTypeScriptFiles(root: string, options: ListOptions = {}): string[] {
+  const files: string[] = [];
+
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+        walk(join(directory, entry.name));
+      } else if (entry.isFile()) {
+        const ext = entry.name.slice(entry.name.lastIndexOf("."));
+        if (!TS_EXT.has(ext) || entry.name.endsWith(".d.ts")) continue;
+        files.push(relative(root, join(directory, entry.name)));
+      }
+    }
+  };
+
+  walk(root);
+  return files.filter((path) => options.includeTests || !isTestPath(path)).sort();
+}
+
+/** Every indexable source file Lumos extractors can emit (Python + TS/JS). */
+export function listRepoFiles(root: string, options: ListOptions = {}): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const path of [...listPythonFiles(root, options), ...listTypeScriptFiles(root, options)]) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    merged.push(path);
+  }
+  return merged.sort();
+}
+
 export interface Corpus {
   files: string[];
   index: Bm25Index;
 }
 
 export function buildCorpus(root: string, options: ListOptions = {}): Corpus {
-  const files = listPythonFiles(root, options);
+  const files = listRepoFiles(root, options);
   const index = new Bm25Index();
 
   for (const path of files) {

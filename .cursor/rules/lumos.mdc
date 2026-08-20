@@ -1,0 +1,17 @@
+---
+description: Preflight and verify agent edits with Lumos before and after changing code
+alwaysApply: true
+---
+
+# Lumos agent loop
+
+Lumos is the local graph context layer for this repository. Do not skip it.
+
+Before you edit any files, call the MCP tool `lumos.preflight_change` with the user's request as `issue_text`. Use the returned files, tests, and context contract as the edit plan. Prefer graph-proved files; if the proof is `text-only`, still start from the ranked file list and say so.
+
+After you edit, call `lumos.verify_patch` with:
+- `issue_text`: the same original request
+- `changed_files`: repository-relative paths you changed
+- `tests_run`: test names or paths you ran, if any
+
+If verification is blocked, fix the missing primary target before continuing. If scope or tests are flagged, tell the user before expanding the change.

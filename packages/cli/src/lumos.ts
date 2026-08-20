@@ -2,6 +2,8 @@
  * The assistant-facing interface. An IDE calls this before it edits.
  *
  *   lumos index /path/to/repo
+ *   lumos init /path/to/repo
+ *   lumos connect
  *   lumos ask "Changing set_cookie breaks tests"
  *   lumos impact django.http.response.HttpResponse.set_cookie
  */
@@ -10,13 +12,21 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 import { HydraClient } from "@lumos/graph";
-import { buildCorpus, impact, retrieve, verifyPatch } from "@lumos/retrieve";
+import { buildCorpus, impact, listPythonFiles, listTypeScriptFiles, retrieve, verifyPatch } from "@lumos/retrieve";
 
+import { absoluteRepoRoot, upsertEnv, writeCursorConnect } from "./connect.ts";
 import { DEFAULT_REPO, DEFAULT_ROOT, lumosHome } from "./defaults.ts";
+import { cmdStart } from "./start.ts";
 
 const USAGE = `lumos — structural context for AI coders
 
-  lumos index <repo-path> [--slug owner/name]
+  lumos index <repo-path> [--slug owner/name] [--lang auto|python|typescript]
+  lumos init <repo-path> [--slug owner/name] [--lang auto|python|typescript]
+    index a repo and make it the active workspace
+  lumos start [repo-path] [--index] [--skip-index] [--lang auto|python|typescript]
+    db up, index workspace, write Cursor MCP + rule
+  lumos connect [repo-path]
+    write Cursor MCP config and a preflight/verify rule
   lumos preflight <issue text | - >
   lumos ask <issue text | - >       alias for preflight
   lumos verify <issue text> --changed file[,file] [--tests test[,test]]
@@ -75,12 +85,66 @@ function inferSlug(root: string, explicit?: string): string {
 async function cmdIndex(): Promise<void> {
   const target = positionals()[0];
   if (!target) {
-    console.error("usage: lumos index <repo-path> [--slug owner/name]");
+    console.error("usage: lumos index <repo-path> [--slug owner/name] [--lang auto|python|typescript]");
     process.exit(1);
   }
-  const root = resolve(target);
+  indexRepo(resolve(target), flag("--slug"), flag("--lang", "auto") as "auto" | "python" | "typescript");
+}
+
+function extractJsonl(
+  home: string,
+  root: string,
+  slug: string,
+  commit: string,
+  lang: "auto" | "python" | "typescript",
+): string {
+  const pythonFiles = listPythonFiles(root).length;
+  const tsFiles = listTypeScriptFiles(root).length;
+  const wantPython = lang === "python" || (lang === "auto" && pythonFiles > 0);
+  const wantTypescript = lang === "typescript" || (lang === "auto" && tsFiles > 0);
+
+  if (!wantPython && !wantTypescript) {
+    console.error(`no Python or TypeScript sources found under ${root}`);
+    process.exit(1);
+  }
+
+  let jsonl = "";
+  if (wantPython) {
+    console.log(`extract python (${pythonFiles} files)`);
+    jsonl += run(
+      "python3",
+      [join(home, "tools/extract_python.py"), root, "--slug", slug, "--commit", commit],
+      home,
+    );
+  }
+  if (wantTypescript) {
+    console.log(`extract typescript (${tsFiles} files)`);
+    jsonl += run(
+      "node",
+      [
+        "--no-warnings",
+        "--import",
+        "tsx",
+        join(home, "tools/extract_typescript.ts"),
+        root,
+        "--slug",
+        slug,
+        "--commit",
+        commit,
+      ],
+      home,
+    );
+  }
+  return jsonl;
+}
+
+function indexRepo(
+  root: string,
+  explicitSlug?: string,
+  lang: "auto" | "python" | "typescript" = "auto",
+): { slug: string; root: string } {
   const home = lumosHome();
-  const slug = inferSlug(root, flag("--slug"));
+  const slug = inferSlug(root, explicitSlug);
   let commit = "";
   try {
     commit = run("git", ["-C", root, "rev-parse", "HEAD"]).trim();
@@ -93,8 +157,8 @@ async function cmdIndex(): Promise<void> {
   const jsonl = join(extractDir, `${stem}.jsonl`);
   const cochange = join(extractDir, `${stem}.cochange.jsonl`);
 
-  console.log(`extract ${slug} @ ${commit.slice(0, 12) || "uncommitted"}`);
-  writeFileSync(jsonl, run("python3", [join(home, "tools/extract_python.py"), root, "--slug", slug, "--commit", commit], home));
+  console.log(`index ${slug} @ ${commit.slice(0, 12) || "uncommitted"}`);
+  writeFileSync(jsonl, extractJsonl(home, root, slug, commit, lang));
   console.log(`cochange`);
   writeFileSync(cochange, run("python3", [join(home, "tools/mine_cochange.py"), root, "--max-commits", "3000"], home));
   console.log(`ingest`);
@@ -104,6 +168,53 @@ async function cmdIndex(): Promise<void> {
     home,
   );
   console.log(`\nindexed ${slug}. Ask with: lumos ask "…"`);
+  return { slug, root };
+}
+
+async function cmdStartCli(): Promise<void> {
+  const targetArg = positionals().find((token) => !token.startsWith("-"));
+  cmdStart({
+    target: targetArg ?? process.cwd(),
+    slug: flag("--slug"),
+    lang: (flag("--lang", "auto") ?? "auto") as "auto" | "python" | "typescript",
+    forceIndex: rest.includes("--index"),
+    skipIndex: rest.includes("--skip-index"),
+    run,
+    indexRepo,
+  });
+}
+
+async function cmdInit(): Promise<void> {
+  const target = positionals()[0];
+  if (!target) {
+    console.error("usage: lumos init <repo-path> [--slug owner/name]");
+    process.exit(1);
+  }
+  const home = lumosHome();
+  const { slug, root } = indexRepo(resolve(target), flag("--slug"), flag("--lang", "auto") as "auto" | "python" | "typescript");
+  upsertEnv(join(home, ".env"), {
+    LUMOS_REPO: slug,
+    LUMOS_ROOT: root,
+  });
+  console.log(`active workspace ${slug} -> ${root}`);
+  console.log("restart pnpm api and pnpm mcp, then run: lumos connect");
+}
+
+function cmdConnect(): void {
+  const home = lumosHome();
+  const indexedRoot = absoluteRepoRoot(flag("--root", DEFAULT_ROOT)!, home);
+  const repo = flag("--repo", DEFAULT_REPO)!;
+  const fallback = repo === "django/django" ? home : indexedRoot;
+  const target = resolve(positionals()[0] ?? fallback);
+  const written = writeCursorConnect({
+    targetRoot: target,
+    lumosHome: home,
+    repo,
+    indexedRoot,
+  });
+  console.log(`wrote ${written.mcpPath}`);
+  console.log(`wrote ${written.rulePath}`);
+  console.log(`agent loop: preflight_change before edits, verify_patch after`);
 }
 
 async function cmdPreflight(): Promise<void> {
@@ -128,7 +239,8 @@ async function cmdPreflight(): Promise<void> {
     limit: Number(flag("--limit", "12")),
   });
 
-  console.log(`\n${result.traversal.engine}  ${result.traversal.elapsedMs}ms  ${result.traversal.pathCount} paths  ${result.seeds.length} seeds`);
+  const proof = result.ranked.some((file) => file.evidence.length > 0) ? "graph-proved" : "text-only";
+  console.log(`\n${result.traversal.engine}  ${result.traversal.elapsedMs}ms  ${result.traversal.pathCount} paths  ${result.seeds.length} seeds  ${proof}`);
   console.log("\nfiles to edit:");
   for (const [index, file] of result.ranked.entries()) {
     const bm25 = file.bm25Rank ? `bm25 #${file.bm25Rank}` : "bm25 miss";
@@ -218,8 +330,17 @@ async function readStdin(): Promise<string> {
 }
 
 switch (command) {
+  case "start":
+    await cmdStartCli();
+    break;
   case "index":
     await cmdIndex();
+    break;
+  case "init":
+    await cmdInit();
+    break;
+  case "connect":
+    cmdConnect();
     break;
   case "ask":
   case "preflight":

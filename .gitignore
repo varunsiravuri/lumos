@@ -22,3 +22,6 @@ data/
 .DS_Store
 .turbo/
 coverage/
+
+# Machine-local Cursor MCP (cwd and repo paths)
+.cursor/mcp.json

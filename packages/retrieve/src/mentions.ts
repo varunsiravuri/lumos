@@ -68,8 +68,13 @@ const INDENTED = /^(?: {4}|\t)\S.*$/gm;
 /** `File "/x/y/z.py", line 42, in handler` — path and frame name in one shape. */
 const TRACEBACK_FRAME = /File "([^"]+\.py)", line \d+(?:, in ([A-Za-z_]\w*))?/g;
 
-/** A dotted path ending in `.py`, with an optional leading directory chain. */
+/** Node / V8 stack: `at fn (src/foo.ts:12:3)` or `at src/foo.ts:12:3`. */
+const TS_TRACEBACK_FRAME =
+  /at (?:(?:async )?(?:[\w$]+(?:\.[\w$]+)*|<anonymous>) )?\(?([^()]+\.(?:tsx?|jsx?)):(\d+):\d+\)?/g;
+
+/** A dotted path ending in a source extension. */
 const PY_PATH = /(?:^|[\s"'`(\[<])((?:[\w.-]+\/)*[\w.-]+\.py)\b/g;
+const TS_PATH = /(?:^|[\s"'`(\[<])((?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|jsx?))\b/g;
 
 /** `a.b.c` or `a.b()` — the dotted chains that name real code. */
 const DOTTED = /\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)\b/g;
@@ -172,7 +177,15 @@ export function extractMentions(issue: string): Mention[] {
     if (frame) collector.add(frame, "symbol", "traceback");
   });
 
+  scan(TS_TRACEBACK_FRAME, issue, ([, path]) => {
+    if (path) collector.add(path.replace(/^\.\//, ""), "path", "traceback");
+  });
+
   scan(PY_PATH, issue, ([, path]) => {
+    if (path) collector.add(path, "path", "path");
+  });
+
+  scan(TS_PATH, issue, ([, path]) => {
     if (path) collector.add(path, "path", "path");
   });
 
@@ -192,7 +205,7 @@ export function extractMentions(issue: string): Mention[] {
 
   for (const [region, source] of regions) {
     scan(DOTTED, region, ([, chain]) => {
-      if (!chain || chain.endsWith(".py")) return;
+      if (!chain || /\.(?:py|tsx?|jsx?)$/.test(chain)) return;
       for (const part of dottedParts(chain)) collector.add(part, "symbol", source);
     });
     scan(SNAKE, region, ([, word]) => word && collector.add(word, "symbol", source));

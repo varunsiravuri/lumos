@@ -8,5 +8,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../graph" }, { "path": "../retrieve" }]
+  "references": [{ "path": "../cli" }, { "path": "../graph" }, { "path": "../retrieve" }]
 }

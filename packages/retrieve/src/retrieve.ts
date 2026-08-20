@@ -91,8 +91,8 @@ export interface RetrieveOptions {
   files: readonly string[];
   /**
    * Files seeded from the lexical ranking, in addition to files named outright.
-   * Default is none: expanding from a BM25 guess is how a hub file overtakes
-   * the right answer. Named mentions only.
+   * Daily preflight uses the top BM25 hits so short prompts still walk HydraDB.
+   * Eval keeps this at 0 so hub files cannot overtake the frozen ranking experiment.
    */
   lexicalSeedCount?: number;
   /** Hops walked from symbol seeds. One hop is a direct caller or callee. */
@@ -105,6 +105,9 @@ export interface RetrieveOptions {
   graphWeight?: number;
   limit?: number;
 }
+
+/** Top BM25 files that become HydraDB seeds when the issue names no symbols. */
+export const LEXICAL_SEED_COUNT = 8;
 
 /**
  * Credit given to the second, third and later seeds that reach the same file.
@@ -242,7 +245,7 @@ export async function retrieve(
   const {
     repo,
     files,
-    lexicalSeedCount = 0,
+    lexicalSeedCount = LEXICAL_SEED_COUNT,
     maxSymbolHops = 1,
     maxFileHops = 1,
     graphWeight = 1,

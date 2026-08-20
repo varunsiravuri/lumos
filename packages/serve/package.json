@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@lumos/cli": "workspace:*",
     "@lumos/graph": "workspace:*",
     "@lumos/retrieve": "workspace:*"
   }

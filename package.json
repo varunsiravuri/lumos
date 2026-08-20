@@ -17,10 +17,12 @@
     "db:logs": "docker compose -f infra/docker-compose.yml logs -f",
     "probe": "tsx --env-file-if-exists=.env packages/graph/src/probe.ts",
     "extract": "python3 tools/extract_python.py",
+    "extract:ts": "node --no-warnings --import tsx tools/extract_typescript.ts",
     "ingest": "node --no-warnings --import tsx --env-file-if-exists=.env packages/ingest/src/cli.ts",
     "retrieve": "node --no-warnings --import tsx --env-file-if-exists=.env packages/retrieve/src/cli.ts",
     "impact": "node --no-warnings --import tsx --env-file-if-exists=.env packages/retrieve/src/impact-cli.ts",
     "lumos": "node --no-warnings --import tsx --env-file-if-exists=.env packages/cli/src/lumos.ts",
+    "start": "node --no-warnings --import tsx --env-file-if-exists=.env packages/cli/src/lumos.ts start",
     "mcp": "node --no-warnings --import tsx --env-file-if-exists=.env packages/cli/src/mcp.ts",
     "api": "node --no-warnings --import tsx --env-file-if-exists=.env packages/serve/src/index.ts",
     "web": "pnpm --filter web dev",
@@ -31,6 +33,6 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2"
+    "typescript": "^5.7.3"
   }
 }

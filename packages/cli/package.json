@@ -3,6 +3,10 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "exports": {
+    "./connect": "./src/connect.ts",
+    "./defaults": "./src/defaults.ts"
+  },
   "dependencies": {
     "@lumos/graph": "workspace:*",
     "@lumos/retrieve": "workspace:*"

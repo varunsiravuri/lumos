@@ -8,7 +8,7 @@ import {
   useSpring,
   useTransform,
 } from "motion/react";
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 
 /* --------------------------------------------------------------------------
  * HERO ENTRANCE STORYBOARD
@@ -49,8 +49,21 @@ const TRANSITION_EASE = [0.16, 1, 0.3, 1] as const;
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b3153]";
 
+// Lives only for this document. A refresh starts a new document, so the intro
+// plays again. Client navigation back from /app keeps the module, so it does not.
+let introSeenThisDocument = false;
+
+function hasSeenIntro(): boolean {
+  return introSeenThisDocument;
+}
+
+function markIntroSeen(): void {
+  introSeenThisDocument = true;
+}
+
 export function CinematicHero() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const skipEntranceRef = useRef(false);
   const reduceMotion = useReducedMotion();
   const [stage, setStage] = useState(0);
   const [videoReady, setVideoReady] = useState(false);
@@ -67,23 +80,32 @@ export function CinematicHero() {
 
   const introLocked = !reduceMotion && stage < 4;
 
-  useEffect(() => {
-    if (reduceMotion) {
+  useLayoutEffect(() => {
+    if (!reduceMotion && !hasSeenIntro()) return;
+    const frame = window.requestAnimationFrame(() => {
+      skipEntranceRef.current = true;
       videoRef.current?.pause();
-      const frame = requestAnimationFrame(() => {
-        setVideoEnded(true);
-        setStage(4);
-      });
-      return () => cancelAnimationFrame(frame);
-    }
+      setVideoReady(true);
+      setVideoEnded(true);
+      setStage(4);
+      markIntroSeen();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [reduceMotion]);
 
-    const fallback = setTimeout(() => setVideoEnded(true), TIMING.videoFallback);
+  useEffect(() => {
+    if (reduceMotion || hasSeenIntro()) return;
+
+    const fallback = setTimeout(() => {
+      setVideoEnded(true);
+      markIntroSeen();
+    }, TIMING.videoFallback);
 
     return () => clearTimeout(fallback);
   }, [reduceMotion]);
 
   useEffect(() => {
-    if (!videoEnded || reduceMotion) return;
+    if (!videoEnded || reduceMotion || skipEntranceRef.current) return;
 
     const timers = [
       setTimeout(() => setStage(1), TIMING.threshold),
@@ -142,7 +164,13 @@ export function CinematicHero() {
               preload="auto"
               poster="/lumos-sky-hero-poster.jpg"
               onLoadedData={() => setVideoReady(true)}
-              onEnded={() => setVideoEnded(true)}
+              onPlay={() => {
+                if (skipEntranceRef.current) videoRef.current?.pause();
+              }}
+              onEnded={() => {
+                setVideoEnded(true);
+                markIntroSeen();
+              }}
             >
               <source src="/lumos-sky-hero.mp4" type="video/mp4" />
             </video>
@@ -208,7 +236,7 @@ export function CinematicHero() {
               <Link href="/docs" className={`sky-nav-link text-sm font-medium text-white/82 ${focusRing}`}>
                 Docs
               </Link>
-              <Link href="/app" className={`sky-header-cta ${focusRing}`}>
+              <Link href="/app" className={`sky-header-cta ${focusRing}`} onClick={markIntroSeen}>
                 Open Lumos
               </Link>
             </nav>
@@ -251,7 +279,7 @@ export function CinematicHero() {
                   Lumos finds the files, proof chains, and tests your coding agent needs before it writes a single line.
                 </p>
                 <div className="mt-7 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
-                  <Link href="/app" className={`sky-primary-cta ${focusRing}`}>
+                  <Link href="/app" className={`sky-primary-cta ${focusRing}`} onClick={markIntroSeen}>
                     Open Lumos
                   </Link>
                   <a href="#product" className={`sky-secondary-cta ${focusRing}`}>

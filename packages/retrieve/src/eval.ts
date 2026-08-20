@@ -239,6 +239,7 @@ for (const [position, instance] of instances.entries()) {
       repo: slug,
       files: corpus.files,
       limit: DEPTH,
+      lexicalSeedCount: 0,
     });
   } catch (error) {
     console.log(`FAILED rank (${String((error as Error).message).split("\n")[0] ?? "unknown"})`);
