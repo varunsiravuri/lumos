@@ -45,6 +45,14 @@ import {
 import { WorkspaceStore, workspaceLabel, type WorkspaceRecord } from "./workspace-store.ts";
 
 const PORT = Number(process.env.LUMOS_API_PORT ?? 8787);
+const HOST = process.env.LUMOS_API_HOST ?? "127.0.0.1";
+const MAX_BODY_BYTES = Number(process.env.LUMOS_MAX_BODY_BYTES ?? 262_144);
+const ALLOWED_ORIGINS = new Set(
+  (process.env.LUMOS_ALLOWED_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
 const DEFAULT_REPO = process.env.LUMOS_REPO ?? "django/django";
 const DEFAULT_ROOT = resolve(process.env.LUMOS_ROOT ?? "data/repos/django");
 const DEMO_REPO = "django/django";
@@ -114,16 +122,31 @@ const importJobs = new Map<string, ImportJob>();
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(JSON.stringify(body));
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let bytes = 0;
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer;
+    bytes += buffer.length;
+    if (bytes > MAX_BODY_BYTES) {
+      throw new Error("REQUEST_BODY_TOO_LARGE");
+    }
+    chunks.push(buffer);
+  }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function applyCors(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  if (!ALLOWED_ORIGINS.has(origin)) return false;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  return true;
 }
 
 function loadCorpus(workspace = workspaces.active()): Corpus {
@@ -430,11 +453,16 @@ function languageSummary(files: string[]): { language: string; files: number }[]
 }
 
 const server = createServer(async (req, res) => {
+  const corsAllowed = applyCors(req, res);
+  if (!corsAllowed) {
+    json(res, 403, { error: "origin is not allowed" });
+    return;
+  }
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Max-Age": "86400",
     });
     res.end();
     return;
@@ -981,10 +1009,14 @@ const server = createServer(async (req, res) => {
     json(res, 404, { error: "not found" });
   } catch (error) {
     console.error(`[http] ${req.method ?? "UNKNOWN"} ${req.url ?? "/"}`, error);
-    json(res, 500, { error: publicServerError() });
+    if (error instanceof Error && error.message === "REQUEST_BODY_TOO_LARGE") {
+      json(res, 413, { error: "request body is too large" });
+    } else {
+      json(res, 500, { error: publicServerError() });
+    }
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`lumos api  http://127.0.0.1:${PORT}  repo=${workspaces.active().slug}`);
+server.listen(PORT, HOST, () => {
+  console.log(`lumos api  http://${HOST}:${PORT}  repo=${workspaces.active().slug}`);
 });

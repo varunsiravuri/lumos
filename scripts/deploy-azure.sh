@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/varunsiravuri/lumos.git}"
 APP_DIR="${APP_DIR:-$HOME/lumos}"
 PUBLIC_IP="${PUBLIC_IP:-}"
+DOMAIN="${DOMAIN:-lumos.uno}"
 
 echo "==> install docker (if needed)"
 if ! command -v docker >/dev/null; then
@@ -49,7 +50,12 @@ HOST_UID=$UID_NUM
 HOST_GID=$GID_NUM
 LUMOS_REPO=django/django
 LUMOS_ROOT=$APP_DIR/data/repos/django
+LUMOS_API_HOST=127.0.0.1
+LUMOS_ALLOWED_ORIGINS=https://$DOMAIN
+MINIO_USER=lumos
+MINIO_PASSWORD=$(openssl rand -hex 24)
 EOF
+chmod 600 .env infra/auth-token
 
 pnpm install
 
@@ -81,40 +87,14 @@ echo "==> swebench lite for killer demo"
 mkdir -p data/swebench
 pnpm swebench --repo django/django > data/swebench/lite.jsonl || true
 
-API_PUBLIC="${PUBLIC_IP:+http://$PUBLIC_IP/api}"
-export NEXT_PUBLIC_LUMOS_API="${API_PUBLIC:-http://127.0.0.1:8787}"
+export NEXT_PUBLIC_LUMOS_API="/api"
 
 echo "==> build web"
 pnpm --filter web build
 
 echo "==> nginx"
 sudo apt-get install -y nginx
-sudo tee /etc/nginx/sites-available/lumos >/dev/null <<NGINX
-server {
-  listen 80 default_server;
-  listen [::]:80 default_server;
-  server_name _;
-
-  location /api/ {
-    rewrite ^/api/(.*)\$ /\$1 break;
-    proxy_pass http://127.0.0.1:8787;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-  }
-
-  location / {
-    proxy_pass http://127.0.0.1:3000;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-  }
-}
-NGINX
-sudo ln -sf /etc/nginx/sites-available/lumos /etc/nginx/sites-enabled/lumos
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+DOMAIN="$DOMAIN" ./scripts/configure-production.sh
 
 echo "==> systemd units"
 sudo tee /etc/systemd/system/lumos-api.service >/dev/null <<UNIT
@@ -145,9 +125,9 @@ After=lumos-api.service
 Type=simple
 User=$USER
 WorkingDirectory=$APP_DIR/apps/web
-Environment=NEXT_PUBLIC_LUMOS_API=http://${PUBLIC_IP:-127.0.0.1}/api
+Environment=NEXT_PUBLIC_LUMOS_API=/api
 Environment=PORT=3000
-ExecStart=$APP_DIR/node_modules/.bin/next start -p 3000
+ExecStart=$APP_DIR/apps/web/node_modules/.bin/next start -H 127.0.0.1 -p 3000
 Restart=always
 RestartSec=5
 
@@ -157,5 +137,10 @@ UNIT
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now lumos-api lumos-web
+if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
+  DOMAIN="$DOMAIN" APP_DIR="$APP_DIR" ./scripts/install-production-ops.sh
+else
+  echo "After issuing the TLS certificate, rerun configure-production.sh and install-production-ops.sh."
+fi
 
-echo "deploy-ok  http://${PUBLIC_IP:-localhost}/"
+echo "deploy-ok  https://${DOMAIN}/"
