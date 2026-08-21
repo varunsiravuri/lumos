@@ -9,8 +9,6 @@ shows why. After the edit, Patch Guard checks that the change stayed on target.
 
 Live demo: [lumos.uno](https://lumos.uno)
 
-Built for [Hack Hydra](https://hackhydra.hydradb.com/) (Track 02B).
-
 ## Why it exists
 
 Most assistants search by similar words. That often returns code that *sounds*
