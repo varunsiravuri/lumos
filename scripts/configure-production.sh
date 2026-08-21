@@ -10,7 +10,8 @@ CERT_DIR="/etc/letsencrypt/live/$DOMAIN"
 
 sudo tee /etc/nginx/conf.d/lumos-security.conf >/dev/null <<'NGINX'
 server_tokens off;
-limit_req_zone $binary_remote_addr zone=lumos_api:10m rate=60r/m;
+# UI polls ~6 endpoints and demo open fires a short burst on top; 60r/m was too tight.
+limit_req_zone $binary_remote_addr zone=lumos_api:10m rate=180r/m;
 limit_req_zone $binary_remote_addr zone=lumos_import:10m rate=3r/m;
 limit_conn_zone $binary_remote_addr zone=lumos_connections:10m;
 NGINX
@@ -20,6 +21,13 @@ proxy_locations() {
   client_max_body_size 256k;
   limit_req_status 429;
   limit_conn_status 429;
+  error_page 429 = @api_rate_limited;
+
+  location @api_rate_limited {
+    default_type application/json;
+    add_header Content-Type application/json always;
+    return 429 '{"error":"Too many requests. Wait a moment and try again."}';
+  }
 
   location = /api/repositories/import {
     limit_req zone=lumos_import burst=1 nodelay;
@@ -34,7 +42,7 @@ proxy_locations() {
   }
 
   location /api/ {
-    limit_req zone=lumos_api burst=20 nodelay;
+    limit_req zone=lumos_api burst=40 nodelay;
     limit_conn lumos_connections 12;
     rewrite ^/api/(.*)\$ /\$1 break;
     proxy_pass http://${APP_HOST}:${API_PORT};

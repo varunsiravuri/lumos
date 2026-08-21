@@ -27,9 +27,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { BlastGraph, type GraphLink, type GraphNode } from "./blast-graph";
+import { apiUrl, readApiJson } from "@/lib/api";
 import { writeLastSource } from "@/lib/last-source";
-
-const API = process.env.NEXT_PUBLIC_LUMOS_API ?? "/api";
 
 interface ImpactHit {
   qualname: string;
@@ -446,9 +445,9 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
 
   const refreshMeta = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/meta`);
+      const response = await fetch(apiUrl("/meta"));
       if (!response.ok) throw new Error("meta unavailable");
-      const next = (await response.json()) as Meta;
+      const next = await readApiJson<Meta>(response);
       setMeta(next);
       if (next.repo && next.files > 0) writeLastSource({ repo: next.repo, label: next.label ?? sourceName(next) });
     } catch {
@@ -459,13 +458,13 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
   const refreshEval = useCallback(async () => {
     try {
       const [summaryResponse, casesResponse] = await Promise.all([
-        fetch(`${API}/eval`),
-        fetch(`${API}/eval/cases`),
+        fetch(apiUrl("/eval")),
+        fetch(apiUrl("/eval/cases")),
       ]);
       if (!summaryResponse.ok) throw new Error("evaluation unavailable");
-      setEvalSummary((await summaryResponse.json()) as EvalSummary);
+      setEvalSummary(await readApiJson<EvalSummary>(summaryResponse));
       if (casesResponse.ok) {
-        const body = (await casesResponse.json()) as { cases: EvalCase[] };
+        const body = await readApiJson<{ cases: EvalCase[] }>(casesResponse);
         setEvalCases(body.cases);
       }
     } catch {
@@ -476,9 +475,9 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
 
   const refreshRepositories = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/repositories`);
+      const response = await fetch(apiUrl("/repositories"));
       if (!response.ok) throw new Error("repositories unavailable");
-      const body = (await response.json()) as { repositories: RepositoryRecord[] };
+      const body = await readApiJson<{ repositories: RepositoryRecord[] }>(response);
       setRepositories(body.repositories);
     } catch {
       setRepositories([]);
@@ -487,9 +486,9 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
 
   const refreshRuns = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/runs?limit=30`);
+      const response = await fetch(apiUrl("/runs?limit=30"));
       if (!response.ok) throw new Error("runs unavailable");
-      const body = (await response.json()) as { runs: RunSummary[] };
+      const body = await readApiJson<{ runs: RunSummary[] }>(response);
       setRuns(body.runs);
     } catch {
       setRuns([]);
@@ -500,9 +499,9 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
 
   const refreshEvents = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/events?limit=30`);
+      const response = await fetch(apiUrl("/events?limit=30"));
       if (!response.ok) throw new Error("events unavailable");
-      const body = (await response.json()) as { events: ActivityEvent[] };
+      const body = await readApiJson<{ events: ActivityEvent[] }>(response);
       setEvents(body.events);
     } catch {
       setEvents([]);
@@ -536,7 +535,7 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
       await Promise.all([refreshMeta(), refreshEval(), refreshRuns(), refreshEvents(), refreshRepositories()]);
     };
     void tick();
-    const id = window.setInterval(() => void tick(), 8000);
+    const id = window.setInterval(() => void tick(), 15000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
@@ -546,9 +545,9 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
   useEffect(() => {
     if (!initialRunId || retrieve?.runId === initialRunId) return;
     const controller = new AbortController();
-    void fetch(`${API}/runs/${encodeURIComponent(initialRunId)}`, { signal: controller.signal })
+    void fetch(apiUrl(`/runs/${encodeURIComponent(initialRunId)}`), { signal: controller.signal })
       .then(async (response) => {
-        const body = (await response.json()) as StoredRun & { error?: string };
+        const body = await readApiJson<StoredRun & { error?: string }>(response);
         if (!response.ok) throw new Error(body.error ?? "run could not be opened");
         const restored = { ...body.result, repo: body.result.repo || body.repo, request: body.result.request || body.request };
         setActiveRequest(compactRequest(body.request));
@@ -680,12 +679,12 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
       setGold([]);
     }
     try {
-      const response = await fetch(`${API}/retrieve`, {
+      const response = await fetch(apiUrl(`/retrieve`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ issue: text }),
       });
-      const body = (await response.json()) as RetrieveResult & { error?: string; guidance?: string };
+      const body = await readApiJson<RetrieveResult & { error?: string; guidance?: string }>(response);
       if (!response.ok) {
         if (response.status === 422) {
           setRequestError(body.guidance ?? body.error ?? "Please describe a more specific code change.");
@@ -710,8 +709,8 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${API}/runs/${encodeURIComponent(runId)}`);
-      const body = (await response.json()) as StoredRun & { error?: string };
+      const response = await fetch(apiUrl(`/runs/${encodeURIComponent(runId)}`));
+      const body = await readApiJson<StoredRun & { error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "run could not be opened");
       const restored = { ...body.result, repo: body.result.repo || body.repo, request: body.result.request || body.request };
       setActiveRequest(compactRequest(body.request));
@@ -729,8 +728,8 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${API}/demo`, { method: "POST" });
-      const body = (await response.json()) as Demo & { error?: string };
+      const response = await fetch(apiUrl(`/demo`), { method: "POST" });
+      const body = await readApiJson<Demo & { error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "demo failed");
       setDemo(body);
       setGold(body.gold);
@@ -750,12 +749,12 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${API}/impact`, {
+      const response = await fetch(apiUrl(`/impact`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol }),
       });
-      const body = (await response.json()) as ImpactResult & { error?: string };
+      const body = await readApiJson<ImpactResult & { error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "impact failed");
       setImpact(body);
       setSelectedNode(body.seed.qualname);
@@ -781,12 +780,12 @@ export function Workstation({ view = "welcome", runId: initialRunId = null }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${API}/repositories/activate`, {
+      const response = await fetch(apiUrl(`/repositories/activate`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ slug }),
       });
-      const body = (await response.json()) as { error?: string };
+      const body = await readApiJson<{ error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "Repository could not be activated");
       setRetrieve(null);
       setActiveRequest("");
@@ -1368,7 +1367,7 @@ function InlinePatchGuard({
     setBusy(true);
     setVerifyError(null);
     try {
-      const response = await fetch(`${API}/verify`, {
+      const response = await fetch(apiUrl(`/verify`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1377,7 +1376,7 @@ function InlinePatchGuard({
           testsRun: testsRun.split("\n").map((value) => value.trim()).filter(Boolean),
         }),
       });
-      const body = (await response.json()) as PatchVerification & { error?: string };
+      const body = await readApiJson<PatchVerification & { error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "patch could not be verified");
       setVerification(body);
       onVerified();
@@ -1847,7 +1846,7 @@ function PatchGuardView({ retrieve, onRequest, onVerified }: { retrieve: Retriev
     setBusy(true);
     setVerifyError(null);
     try {
-      const response = await fetch(`${API}/verify`, {
+      const response = await fetch(apiUrl(`/verify`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1856,7 +1855,7 @@ function PatchGuardView({ retrieve, onRequest, onVerified }: { retrieve: Retriev
           testsRun: testsRun.split("\n").map((value) => value.trim()).filter(Boolean),
         }),
       });
-      const body = (await response.json()) as PatchVerification & { error?: string };
+      const body = await readApiJson<PatchVerification & { error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "patch could not be verified");
       setVerification(body);
       onVerified();
@@ -2126,9 +2125,9 @@ pnpm api`;
   useEffect(() => {
     if (!job || !["queued", "cloning", "indexing"].includes(job.status)) return;
     const poll = window.setInterval(() => {
-      void fetch(`${API}/repositories/import/${encodeURIComponent(job.id)}`)
+      void fetch(apiUrl(`/repositories/import/${encodeURIComponent(job.id)}`))
         .then(async (response) => {
-          const body = (await response.json()) as { job?: ImportJob; error?: string };
+          const body = await readApiJson<{ job?: ImportJob; error?: string }>(response);
           if (!response.ok || !body.job) throw new Error(body.error ?? "Import status unavailable");
           setJob(body.job);
           if (body.job.status === "ready" && completedJob.current !== body.job.id) {
@@ -2147,12 +2146,12 @@ pnpm api`;
     setImportBusy(true);
     setImportError(null);
     try {
-      const response = await fetch(`${API}/repositories/import`, {
+      const response = await fetch(apiUrl(`/repositories/import`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: repositoryUrl }),
       });
-      const body = (await response.json()) as { job?: ImportJob; reused?: boolean; error?: string };
+      const body = await readApiJson<{ job?: ImportJob; reused?: boolean; error?: string }>(response);
       if (!response.ok) throw new Error(body.error ?? "Repository import failed");
       if (body.reused) {
         await onReady();
@@ -2227,9 +2226,9 @@ function RepositoryBrowserView({ repositories, meta, graphReady, onActivate, onR
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void fetch(`${API}/files?limit=220&q=${encodeURIComponent(query)}`, { signal: controller.signal })
+      void fetch(apiUrl(`/files?limit=220&q=${encodeURIComponent(query)}`), { signal: controller.signal })
         .then(async (response) => {
-          const body = (await response.json()) as { files?: string[]; matched?: number; languages?: { language: string; files: number }[]; error?: string };
+          const body = await readApiJson<{ files?: string[]; matched?: number; languages?: { language: string; files: number }[]; error?: string }>(response);
           if (!response.ok) throw new Error(body.error ?? "Indexed files unavailable");
           setFiles(body.files ?? []);
           setMatched(body.matched ?? 0);
@@ -2250,9 +2249,9 @@ function RepositoryBrowserView({ repositories, meta, graphReady, onActivate, onR
   useEffect(() => {
     if (!selected) return;
     const controller = new AbortController();
-    void fetch(`${API}/file?path=${encodeURIComponent(selected)}`, { signal: controller.signal })
+    void fetch(apiUrl(`/file?path=${encodeURIComponent(selected)}`), { signal: controller.signal })
       .then(async (response) => {
-        const body = (await response.json()) as { content?: string; truncated?: boolean; error?: string };
+        const body = await readApiJson<{ content?: string; truncated?: boolean; error?: string }>(response);
         if (!response.ok) throw new Error(body.error ?? "File preview unavailable");
         setSource(body.content ?? "");
         setTruncated(Boolean(body.truncated));
@@ -2309,9 +2308,9 @@ function GraphExplorerView({
   useEffect(() => {
     if (!repo || !graphReady) return;
     const controller = new AbortController();
-    void fetch(`${API}/symbols?limit=6`, { signal: controller.signal })
+    void fetch(apiUrl(`/symbols?limit=6`), { signal: controller.signal })
       .then(async (response) => {
-        const body = (await response.json()) as { symbols?: { qualname: string; path: string; kind: string }[]; error?: string };
+        const body = await readApiJson<{ symbols?: { qualname: string; path: string; kind: string }[]; error?: string }>(response);
         if (!response.ok) throw new Error(body.error ?? "Repository symbols unavailable");
         const next = body.symbols ?? [];
         setSuggestionError(null);
@@ -2409,10 +2408,10 @@ function RequestView({
       return;
     }
     const controller = new AbortController();
-    void fetch(`${API}/symbols?limit=3`, { signal: controller.signal })
+    void fetch(apiUrl(`/symbols?limit=3`), { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) return [];
-        const body = (await response.json()) as { symbols?: { qualname: string; path: string }[] };
+        const body = await readApiJson<{ symbols?: { qualname: string; path: string }[] }>(response);
         return (body.symbols ?? []).map((symbol) => ({
           label: symbol.qualname.split(".").at(-1) ?? symbol.qualname,
           value: `Update \`${symbol.qualname}\` and verify the behavior connected to ${symbol.path}.`,
