@@ -41,8 +41,8 @@ pnpm probe                 # should print probe-ok
 
 # Load the Django demo graph, then open the UI
 pnpm ingest data/extract/django.jsonl data/extract/django.cochange.jsonl
-pnpm api                   # API on :8787
-pnpm web                   # UI on :3000
+pnpm api                   
+pnpm web                   
 ```
 
 Open [http://localhost:3000](http://localhost:3000), then **Try Lumos on Django**.
@@ -78,7 +78,6 @@ Main MCP tools:
 | `pnpm eval` | SWE-bench Lite: BM25 vs graph vs hybrid |
 | `pnpm typecheck` / `pnpm test` | Typecheck and unit tests |
 
-HydraDB ports (local): Bolt `7687`, HTTP `8443`, admin `9090`.
 
 ## How retrieval works (short version)
 
