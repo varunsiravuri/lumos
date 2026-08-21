@@ -9,6 +9,9 @@ shows why. After the edit, Patch Guard checks that the change stayed on target.
 
 Live demo: [lumos.uno](https://lumos.uno)
 
+<img width="1470" height="956" alt="Screenshot 2026-08-21 at 6 13 43 AM" src="https://github.com/user-attachments/assets/4bde9f5c-147e-4198-b657-72b92b29a93c" />
+
+
 ## Why it exists
 
 Most assistants search by similar words. That often returns code that *sounds*
